@@ -12,7 +12,6 @@ function inputDB = generate_synthetic_input(templateDB, imgSize, rotationDeg, sh
         inputDB = [];
         return;
     end
-
     inputDB = templateDB; % מעתיקים את המקור
     
     % המרות וחישובים מקדימים
