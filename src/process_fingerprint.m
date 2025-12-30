@@ -12,8 +12,9 @@ function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img
     imgEnhanced = imgaussfilt(img, 0.5);
     
     % 3. בינאריזציה ושלד
-    binaryImg = imbinarize(imgEnhanced, 'adaptive', 'Sensitivity', 0.5);
-    skeletonImg = bwmorph(binaryImg, 'thin', Inf);
+% רגישות 0.6-0.7 תתפוס יותר פיקסלים כ"רכס" (שחור) גם אם הם חלשים
+binaryImg = imbinarize(imgEnhanced, 'adaptive', 'Sensitivity', 0.65);
+skeletonImg = bwmorph(binaryImg, 'thin', Inf);
     
     % 4. עיבוד וחילוץ נקודות
     roiMask = get_roi_mask(skeletonImg);
