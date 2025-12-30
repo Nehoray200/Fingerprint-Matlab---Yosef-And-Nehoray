@@ -1,5 +1,5 @@
 % טען תמונה שאתה רוצה לבדוק
-img = imread('data/my_test_fingerprint3.tif'); 
+img = imread('data/v4.jpg'); 
 
 % הרץ את הויזואליזציה
 visualize_pipeline(img);
