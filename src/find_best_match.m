@@ -1,15 +1,13 @@
 function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData, inputData, manualThreshold)
-    % find_best_match - גרסה ממוטבת ביצועים (Smart Filtering)
-    % אופטימיזציה: שימוש ב-Descriptors לסינון מוקדם של זוגות ליישור.
+    % find_best_match - גרסה נקייה ומתכווננת (Configurable)
     
     % --- פירוק הקלט ---
-    T_pts = templateData.minutiae;      % נקודות במאגר (X, Y, Type, Angle)
-    T_desc = templateData.descriptors;  % מתארים במאגר
+    T_pts = templateData.minutiae;
+    T_desc = templateData.descriptors;
+    I_pts = inputData.minutiae;
+    I_desc = inputData.descriptors;
     
-    I_pts = inputData.minutiae;         % נקודות בקלט
-    I_desc = inputData.descriptors;     % מתארים בקלט
-    
-    % --- טעינת הגדרות ---
+    % --- 1. טעינת הגדרות מהקונפיגורציה ---
     cfg = get_config();
     if nargin < 3 || manualThreshold == 0
         scoreThreshold = cfg.match.pass_threshold;
@@ -17,10 +15,13 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
         scoreThreshold = manualThreshold;
     end
     
-    % פרמטרים
-    distThrSq = cfg.match.max_dist^2;
-    angThr    = cfg.match.max_ang_rad;
-    sigmaDist = cfg.score.sigma_dist;
+    % שימוש בערכים מקובץ ההגדרות
+    distThrSq     = cfg.match.max_dist^2;
+    angThr        = cfg.match.max_ang_rad;
+    numCandidates = cfg.match.candidate_count; % שולט על המהירות/דיוק
+    
+    sigmaDist     = cfg.score.sigma_dist;
+    sigmaDesc     = cfg.score.sigma_desc;      % שולט על הסלחנות של ה-Descriptor
     
     bestScore = 0;
     bestAlignedInput = [];
@@ -30,7 +31,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
     
     if NT < 3 || NI < 3, finalScore = 0; isMatch = false; return; end
     
-    % המרה למרוכבים לחישוב וקטורי מהיר
+    % המרה למרוכבים
     I_complex = complex(I_pts(:,1), I_pts(:,2));
     D_complex = complex(T_pts(:,1), T_pts(:,2));
     
@@ -39,85 +40,65 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
     I_types  = I_pts(:,3);
     D_types  = T_pts(:,3);
     
-    % --- שלב 1: יצירת רשימת מועמדים חכמה (Candidate Selection) ---
-    % במקום לנסות ליישר כל נקודה מול כל נקודה, נחפש זוגות עם Descriptors דומים.
-    
-    % חישוב מרחק בין כל ה-Descriptors (מטריצה בגודל NI x NT)
-    % אנו משתמשים בחישוב וקטורי מהיר (pdist2 גרסה ידנית)
+    % --- שלב 1: בחירת מועמדים (Priority Selection) ---
     diffMat = zeros(NI, NT);
     for i = 1:NI
-        % מרחק אוקלידי בין המתאר של נקודה i בקלט לכל המתארים במאגר
         d = I_desc(i,:) - T_desc; 
         diffMat(i,:) = sqrt(sum(d.^2, 2));
     end
     
-    % מציאת הזוגות הכי טובים (אלו עם המרחק הקטן ביותר)
-    % נבחר את ה-K הזוגות המבטיחים ביותר (למשל 30)
-    numCandidates = min(30, NI * NT); 
+    % לוקחים את כמות המועמדים שהוגדרה ב-Config (למשל 100)
+    actualCandidates = min(numCandidates, NI * NT);
+    
     [~, sortIdx] = sort(diffMat(:), 'ascend');
-    [candidateI, candidateJ] = ind2sub([NI, NT], sortIdx(1:numCandidates));
+    [candidateI, candidateJ] = ind2sub([NI, NT], sortIdx(1:actualCandidates));
     
-    % --- שלב 2: לולאת היישור רק על המועמדים (Alignment Loop) ---
-    
-    for k = 1:numCandidates
-        i = candidateI(k); % אינדקס בקלט
-        j = candidateJ(k); % אינדקס במאגר
+    % --- שלב 2: לולאת היישור ---
+    for k = 1:actualCandidates
+        i = candidateI(k);
+        j = candidateJ(k);
         
-        % סינון סוג הנקודה (חייב להיות זהה: פיצול מול פיצול וכו')
         if I_types(i) ~= D_types(j), continue; end
         
-        % חישוב זווית והזזה ליישור
+        % יישור
         dTheta = D_angles(j) - I_angles(i);
         rotationFactor = exp(1i * dTheta);
         
-        % טרנספורמציה גלובלית
         I_prime_complex = (I_complex - I_complex(i)) * rotationFactor + D_complex(j);
         I_prime_angles = mod(I_angles + dTheta + pi, 2*pi) - pi;
         
-        % --- חישוב הציון (וקטורי לחלוטין) ---
-        currentScore = 0;
-        
-        % מטריצת מרחקים בין הנקודות המיושרות לנקודות המאגר
-        % ניצול יכולות המטריצה של MATLAB (Broadcasting)
-        % שורות = נקודות קלט, עמודות = נקודות מאגר
+        % חישוב הציון
         distGrid = abs(I_prime_complex - D_complex.'); 
-        
-        % לכל נקודה בקלט, מצא את השכן הכי קרוב במאגר
         [minDists, closestIndices] = min(distGrid, [], 2);
         
-        % חישוב הציון רק עבור התאמות טובות
         validMatches = (minDists.^2 < distThrSq);
         
-        % בדיקת כיוון וסוג עבור ההתאמות שנמצאו קרובות
         idxInput = find(validMatches);
         idxDb = closestIndices(validMatches);
         
         if isempty(idxInput), continue; end
         
-        % בדיקת הפרש זוויות לכל הזוגות בבת אחת
+        % בדיקת זווית לפי הסף שהוגדר ב-Config
         angleDiffs = abs(mod(I_prime_angles(idxInput) - D_angles(idxDb) + pi, 2*pi) - pi);
-        typeMatch = (I_types(idxInput) == D_types(idxDb));
         
-        % סינון סופי: גם קרוב, גם זווית תואמת, גם סוג תואם
+        typeMatch = (I_types(idxInput) == D_types(idxDb));
         strictMatch = (angleDiffs < angThr) & typeMatch;
         
-        % סיכום הניקוד
+        currentScore = 0;
         if any(strictMatch)
-            % ניקוד גאומטרי
             geomScores = exp(-minDists(idxInput(strictMatch)).^2 / (2 * sigmaDist^2));
             
-            % בונוס על דמיון Descriptors (אופציונלי, מחזק אמינות)
-            % שולפים את המרחקים שכבר חישבנו ב-diffMat
-            % צריך להיזהר עם אינדקסים ליניאריים
+            % שימוש ב-sigmaDesc מתוך ה-Config
             descScores = zeros(size(geomScores));
             for m = 1:length(geomScores)
-                descScores(m) = exp(-diffMat(idxInput(m), idxDb(m))^2 / (2 * 10^2));
+                descVal = diffMat(idxInput(m), idxDb(m));
+                descScores(m) = exp(-descVal^2 / (2 * sigmaDesc^2)); 
             end
             
             currentScore = sum(geomScores .* descScores);
         end
         
-        % נרמול הציון
+        % נרמול
         finalIterScore = (currentScore^2) / (NT * NI) * 100;
         
         if finalIterScore > bestScore
@@ -125,7 +106,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
             bestAlignedInput = [real(I_prime_complex), imag(I_prime_complex), I_types, I_prime_angles];
         end
         
-        % אופטימיזציה: עצירה מוקדמת אם הגענו לציון מעולה
+        % עצירה מוקדמת (Hardcoded כי זה אופטימיזציה אבסולוטית)
         if bestScore > 80
             break;
         end
