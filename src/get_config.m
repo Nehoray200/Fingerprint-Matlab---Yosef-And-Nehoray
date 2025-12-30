@@ -6,16 +6,14 @@ function cfg = get_config()
     
     %% הגדרות סינון (Preprocessing)
     % סינון נקודות קרובות מדי (Artifacts) - מבוסס על המאמר Post-processing
-    cfg.filter.border_margin = 15;
+cfg.filter.border_margin = 10;
 cfg.filter.min_distance = 10; % נקודות לא יכולות להיות קרובות מ-10 פיקסלים
     %% הגדרות התאמה (Matching)
     % סף המעבר:
     % ציון 8.0 ומעלה משקף סבירות גבוהה ל-10 עד 12 נקודות תואמות.
-    cfg.match.pass_threshold = 8.0; 
-    
+cfg.match.pass_threshold = 12.0;    
     % מרחק מקסימלי לחיפוש שכן (Search Box)
-    cfg.match.max_dist = 20;       
-    
+cfg.match.max_dist = 15;    
     % סובלנות לסיבוב (Rotation Invariance)
     cfg.match.max_ang_deg = 45;    
     cfg.match.max_ang_rad = deg2rad(cfg.match.max_ang_deg);
@@ -31,7 +29,7 @@ cfg.filter.min_distance = 10; % נקודות לא יכולות להיות קרו
     cfg.score.sigma_desc = 45;     
 
     %% הגדרות מסיכה (ROI)
-    cfg.roi.erosion_size = 6;
+    cfg.roi.erosion_size = 10;
     cfg.roi.closing_size = 20; 
-    cfg.roi.erosion_size = 5;
+
 end
