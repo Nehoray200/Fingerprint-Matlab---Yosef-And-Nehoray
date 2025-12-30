@@ -9,8 +9,8 @@ addpath('data');         % מוסיף את תיקיית התמונות (אם צ�
 
 % --- 2. הגדרות מערכת ---
 dbFileName = 'fingerprint_database.mat';
-PASS_THRESHOLD = 12; % סף למעבר
-
+% אם הקונפיג נטען, קח משם. אחרת ברירת מחדל.
+if exist('cfg', 'var'), PASS_THRESHOLD = cfg.match.pass_threshold; else, PASS_THRESHOLD = 12; end
 % טעינת קונפיגורציה (אם תרצה להשתמש בה בהמשך)
 if exist('get_config', 'file')
     cfg = get_config();
