@@ -1,114 +1,101 @@
 function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData, inputData, manualThreshold)
-    % find_best_match - גרסה נקייה ומתכווננת (Configurable)
+    % find_best_match - גרסה עצמאית (ללא צורך ב-Toolboxes)
     
-    % --- פירוק הקלט ---
     T_pts = templateData.minutiae;
     T_desc = templateData.descriptors;
     I_pts = inputData.minutiae;
     I_desc = inputData.descriptors;
     
-    % --- 1. טעינת הגדרות מהקונפיגורציה ---
     cfg = get_config();
-    if nargin < 3 || manualThreshold == 0
-        scoreThreshold = cfg.match.pass_threshold;
-    else
-        scoreThreshold = manualThreshold;
+    scoreThreshold = cfg.match.pass_threshold;
+    if nargin >= 3 && manualThreshold > 0, scoreThreshold = manualThreshold; end
+    
+    % בדיקת שפיות
+    if size(T_pts,1) < 5 || size(I_pts,1) < 5
+        finalScore = 0; bestAlignedInput=[]; isMatch=false; return;
     end
     
-    % שימוש בערכים מקובץ ההגדרות
-    distThrSq     = cfg.match.max_dist^2;
-    angThr        = cfg.match.max_ang_rad;
-    numCandidates = cfg.match.candidate_count; % שולט על המהירות/דיוק
+    distThrSq = cfg.match.max_dist^2;
+    angThr = cfg.match.max_ang_rad;
+    sigmaDist = cfg.score.sigma_dist;
+    sigmaDesc = cfg.score.sigma_desc;
     
-    sigmaDist     = cfg.score.sigma_dist;
-    sigmaDesc     = cfg.score.sigma_desc;      % שולט על הסלחנות של ה-Descriptor
+    % --- שלב 1: מציאת מועמדים ---
+    NI = size(I_pts, 1); NT = size(T_pts, 1);
     
-    bestScore = 0;
-    bestAlignedInput = [];
-    
-    NT = size(T_pts, 1);
-    NI = size(I_pts, 1);
-    
-    if NT < 3 || NI < 3, finalScore = 0; isMatch = false; return; end
-    
-    % המרה למרוכבים
-    I_complex = complex(I_pts(:,1), I_pts(:,2));
-    D_complex = complex(T_pts(:,1), T_pts(:,2));
-    
-    I_angles = I_pts(:,4); 
-    D_angles = T_pts(:,4);
-    I_types  = I_pts(:,3);
-    D_types  = T_pts(:,3);
-    
-    % --- שלב 1: בחירת מועמדים (Priority Selection) ---
+    % חישוב ידני של מטריצת מרחקים בין Descriptors (במקום pdist2)
     diffMat = zeros(NI, NT);
     for i = 1:NI
         d = I_desc(i,:) - T_desc; 
         diffMat(i,:) = sqrt(sum(d.^2, 2));
     end
     
-    % לוקחים את כמות המועמדים שהוגדרה ב-Config (למשל 100)
-    actualCandidates = min(numCandidates, NI * NT);
-    
+    % בחירת המועמדים הטובים ביותר
+    numCandidates = min(cfg.match.candidate_count, NI * NT);
     [~, sortIdx] = sort(diffMat(:), 'ascend');
-    [candidateI, candidateJ] = ind2sub([NI, NT], sortIdx(1:actualCandidates));
+    [candidateI, candidateJ] = ind2sub([NI, NT], sortIdx(1:numCandidates));
     
-    % --- שלב 2: לולאת היישור ---
-    for k = 1:actualCandidates
+    bestScore = 0;
+    bestAlignedInput = [];
+    
+    % --- שלב 2: לולאת יישור ---
+    for k = 1:numCandidates
         i = candidateI(k);
         j = candidateJ(k);
         
-        if I_types(i) ~= D_types(j), continue; end
+        % יישור לפי זוג אחד
+        dTheta = T_pts(j,4) - I_pts(i,4);
+        c = cos(dTheta); s = sin(dTheta);
+        rotMat = [c -s; s c];
         
-        % יישור
-        dTheta = D_angles(j) - I_angles(i);
-        rotationFactor = exp(1i * dTheta);
+        centeredI = I_pts(:,1:2) - I_pts(i,1:2);
+        rotatedI = centeredI * rotMat';
+        alignedI = rotatedI + T_pts(j,1:2);
         
-        I_prime_complex = (I_complex - I_complex(i)) * rotationFactor + D_complex(j);
-        I_prime_angles = mod(I_angles + dTheta + pi, 2*pi) - pi;
+        alignedAng = mod(I_pts(:,4) + dTheta + pi, 2*pi) - pi;
         
-        % חישוב הציון
-        distGrid = abs(I_prime_complex - D_complex.'); 
-        [minDists, closestIndices] = min(distGrid, [], 2);
+        % --- החלפת knnsearch בחישוב ידני ---
+        % לכל נקודה ב-alignedI, מוצאים את הכי קרובה ב-T_pts
+        dists = zeros(NI, 1);
+        idx = zeros(NI, 1);
+        RefCoords = T_pts(:, 1:2);
         
-        validMatches = (minDists.^2 < distThrSq);
+        for q = 1:NI
+            % חישוב מרחק לכל הנקודות במאגר
+            diffs = RefCoords - alignedI(q, :);
+            dsSq = sum(diffs.^2, 2); % מרחק בריבוע
+            [minValSq, minIdx] = min(dsSq);
+            dists(q) = sqrt(minValSq);
+            idx(q) = minIdx;
+        end
+        % ------------------------------------
         
-        idxInput = find(validMatches);
-        idxDb = closestIndices(validMatches);
+        % סינון התאמות טובות
+        valid = dists < cfg.match.max_dist;
         
-        if isempty(idxInput), continue; end
-        
-        % בדיקת זווית לפי הסף שהוגדר ב-Config
-        angleDiffs = abs(mod(I_prime_angles(idxInput) - D_angles(idxDb) + pi, 2*pi) - pi);
-        
-        typeMatch = (I_types(idxInput) == D_types(idxDb));
-        strictMatch = (angleDiffs < angThr) & typeMatch;
-        
-        currentScore = 0;
-        if any(strictMatch)
-            geomScores = exp(-minDists(idxInput(strictMatch)).^2 / (2 * sigmaDist^2));
+        if sum(valid) >= 3
+            matchedIdxInput = find(valid);
+            matchedIdxDb = idx(valid);
             
-            % שימוש ב-sigmaDesc מתוך ה-Config
-            descScores = zeros(size(geomScores));
-            for m = 1:length(geomScores)
-                descVal = diffMat(idxInput(m), idxDb(m));
-                descScores(m) = exp(-descVal^2 / (2 * sigmaDesc^2)); 
+            angDiffs = abs(mod(alignedAng(matchedIdxInput) - T_pts(matchedIdxDb,4) + pi, 2*pi) - pi);
+            typeMatch = (I_pts(matchedIdxInput,3) == T_pts(matchedIdxDb,3));
+            
+            goodMatches = (angDiffs < angThr) & typeMatch;
+            
+            if sum(goodMatches) > 0
+                geomScore = sum(exp(-dists(valid).^2 / (2*sigmaDist^2)));
+                
+                linIdx = sub2ind([NI, NT], matchedIdxInput(goodMatches), matchedIdxDb(goodMatches));
+                descVals = diffMat(linIdx);
+                descScore = sum(exp(-descVals.^2 / (2*sigmaDesc^2)));
+                
+                currentScore = (geomScore * descScore) / (NI * NT) * 1000;
+                
+                if currentScore > bestScore
+                    bestScore = currentScore;
+                    bestAlignedInput = [alignedI, I_pts(:,3), alignedAng];
+                end
             end
-            
-            currentScore = sum(geomScores .* descScores);
-        end
-        
-        % נרמול
-        finalIterScore = (currentScore^2) / (NT * NI) * 100;
-        
-        if finalIterScore > bestScore
-            bestScore = finalIterScore;
-            bestAlignedInput = [real(I_prime_complex), imag(I_prime_complex), I_types, I_prime_angles];
-        end
-        
-        % עצירה מוקדמת (Hardcoded כי זה אופטימיזציה אבסולוטית)
-        if bestScore > 80
-            break;
         end
     end
     

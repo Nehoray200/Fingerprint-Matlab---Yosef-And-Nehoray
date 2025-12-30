@@ -1,39 +1,43 @@
 function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img)
-    % process_fingerprint - גרסה גולמית (Raw Mode) ללא ניקוי
-    % הופכת ישר לבינארי ולשלד, בלי פילטרים בדרך.
+    % process_fingerprint - גרסה סלחנית (לוכדת מקסימום נקודות)
     
-    % 1. המרה לאפור (חובה כדי לעבוד)
+    % 1. המרה ושיפור
     if size(img, 3) == 3, img = rgb2gray(img); end
     img = im2double(img);
     
-    % --- בוטל: שלב שיפור וסינון רעשים (Enhancement) ---
-    % img = imgaussfilt(img, 0.5); 
+    % שיפור ניגודיות (עוזר מאוד לתמונות חיוורות)
+    img = adapthisteq(img); 
+    imgEnhanced = imgaussfilt(img, 0.5); % פילטר עדין יותר
     
-    % 2. בינאריזציה (חובה - הפיכה לשחור לבן)
-    % משתמשים ישירות בתמונה המקורית.
-    % Sensitivity נשאר כדי לקבוע איפה הגבול בין שחור ללבן
-    binaryImg = imbinarize(img, 'adaptive', 'Sensitivity', 0.86);
+    % 2. בינאריזציה רגישה
+    % Sensitivity גבוה (0.65) אומר: תחשוב שיותר דברים הם "רכס" ולא רקע
+    binaryImg = imbinarize(imgEnhanced, 'adaptive', 'Sensitivity', 0.65);
     
-    % --- בוטל: ניקוי רעשים מורפולוגי (Post-processing) ---
-    % השורות האלו נועדו למחוק נקודות שחורות קטנות או לסגור חורים לבנים
-    % binaryImg = ~bwareaopen(~binaryImg, 10); 
-    % binaryImg = bwareaopen(binaryImg, 10);
+    % --- ניקוי עדין בלבד ---
+    % סגירת חורים קטנים בתוך הרכסים
+    binaryImg = bwareaopen(binaryImg, 5); 
+    % מחיקת רעש רקע (רק נקודות ממש קטנות)
+    binaryImg = ~bwareaopen(~binaryImg, 5); 
     
-    % 3. יצירת שלד (Skeletonization)
-    % הופכים ישר את התמונה הבינארית לשלד
+    % 3. יצירת שלד
     skeletonImg = bwmorph(binaryImg, 'thin', Inf);
     
-    % --- בוטל: ניקוי קוצים מהשלד ---
-    % פעולה זו מנקה "זנבות" קטנים שנחשבים בדרך כלל לטעות
-    % skeletonImg = bwmorph(skeletonImg, 'clean');
+    % ניקוי בסיסי (בלי 'spur' שמוחק קצוות)
+    skeletonImg = bwmorph(skeletonImg, 'clean');
     
-    % 4. עיבוד וחילוץ נקודות (המשך רגיל)
+    % 4. מסיכה (ROI) מקסימלית
     roiMask = get_roi_mask(skeletonImg);
+    
+    % כרסום מינימלי (כמעט לא נוגעים בשוליים)
+    se = strel('disk', 2); 
+    roiMask = imerode(roiMask, se);
+    
+    % חילוץ
     rawMinutiae = extract_minutiae_features(skeletonImg);
     
-    % סינון לפי המסיכה
+    % סינון
     template = filter_minutiae(rawMinutiae, roiMask);
     
-    % 5. חישוב מתארים
+    % 5. מתארים
     descriptors = compute_descriptors(template);
 end

@@ -15,14 +15,14 @@ function cfg = get_config()
     cfg.match.pass_threshold = 8.0; 
     
     % מרחק מקסימלי לחיפוש שכן (Search Box)
-    cfg.match.max_dist = 25;       
+    cfg.match.max_dist = 20;       
     
     % סובלנות לסיבוב (Rotation Invariance)
     cfg.match.max_ang_deg = 45;    
     cfg.match.max_ang_rad = deg2rad(cfg.match.max_ang_deg);
     
     % בדיקת כל האפשרויות לדיוק מקסימלי
-    cfg.match.candidate_count = 1000; 
+   cfg.match.candidate_count = 80;
 
     %% הגדרות ניקוד (Scoring Logic)
     % Sigma = 12 נותן איזון טוב בין גמישות לדיוק (לפי FVC standards)
@@ -33,5 +33,5 @@ function cfg = get_config()
 
     %% הגדרות מסיכה (ROI)
     cfg.roi.closing_size = 20; 
-    cfg.roi.erosion_size = 15;
+    cfg.roi.erosion_size = 5;
 end
