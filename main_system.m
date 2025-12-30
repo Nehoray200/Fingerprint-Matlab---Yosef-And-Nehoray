@@ -1,159 +1,131 @@
 %% ========================================================================
-%% מערכת ביומטרית לזיהוי טביעת אצבע - הגרסה הסופית
+%% מערכת ביומטרית לזיהוי טביעת אצבע - main_system.m
 %% ========================================================================
 clc; clear; close all;
 
-% --- הגדרות מערכת ---
+% --- 1. הגדרת נתיבים (חובה כדי ש-MATLAB ימצא את הפונקציות) ---
+addpath(genpath('src')); % מוסיף את תיקיית src וכל תתי-התיקיות שלה
+addpath('data');         % מוסיף את תיקיית התמונות (אם צריך)
+
+% --- 2. הגדרות מערכת ---
 dbFileName = 'fingerprint_database.mat';
-PASS_THRESHOLD = 50; % ציון מינימלי למעבר (מספר נקודות תואמות)
+PASS_THRESHOLD = 12; % סף למעבר
+
+% טעינת קונפיגורציה (אם תרצה להשתמש בה בהמשך)
+if exist('get_config', 'file')
+    cfg = get_config();
+else
+    warning('קובץ config לא נמצא, משתמש בערכי ברירת מחדל.');
+end
 
 while true
-    %% 1. תפריט ראשי
+    %% תפריט ראשי
     choice = menu('מערכת ביומטרית - תפריט ראשי', ...
-                  '1. רישום משתמש חדש (Enrollment)', ...
+                  '1. רישום משתמש (Enrollment)', ...
                   '2. זיהוי משתמש (Identification)', ...
-                  '3. הצגת רשימת המשתמשים במאגר', ...
+                  '3. הצגת המאגר', ...
                   '4. יציאה');
               
     if choice == 4 || choice == 0
-        disp('להתראות!');
+        disp('יציאה מהמערכת.');
         break;
     end
     
-    %% 2. שלב משותף: טעינת תמונה ועיבוד (Pipeline)
-    % אנחנו מבצעים את העיבוד הכבד כאן, לפני שמחליטים אם לרשום או לזהות
+    %% שלב משותף: טעינת תמונה ועיבוד (Pipeline)
     currentTemplate = [];
     currentImg = [];
     
     if choice == 1 || choice == 2
-        [file, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Fingerprint Images'}, 'בחר תמונה');
+        % שימוש ב-uigetfile כדי לבחור תמונה מכל מקום
+        [file, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Fingerprint Files'}, ...
+                                 'בחר תמונת טביעת אצבע', 'data/'); % ברירת מחדל לתיקיית data
+        
         if isequal(file, 0), continue; end % המשתמש ביטל
         
-        currentImg = imread(fullfile(path, file));
+        fullPath = fullfile(path, file);
+        currentImg = imread(fullPath);
         
-        % --- קריאה לפונקציית המעטפת (Wrapper) ---
-        % שים לב: כאן קוראים לפונקציה process_fingerprint ולא main_step2
-        disp('>> מפעיל עיבוד תמונה (Pipeline)...');
+        % --- קריאה לפונקציית העיבוד (שנמצאת ב-src) ---
+        disp('>> מעבד תמונה (Pipeline)...');
         try
+            % פה אנחנו קוראים לפונקציה Process שיצרנו קודם
             [currentTemplate, ~, ~] = process_fingerprint(currentImg);
         catch err
-            errordlg(['שגיאה בעיבוד התמונה: ' err.message]);
+            errordlg(['שגיאה בעיבוד: ' err.message]);
             continue;
         end
         
-        % בדיקת איכות: אם לא מצאנו מספיק נקודות, אין טעם להמשיך
+        % בדיקת איכות
         if size(currentTemplate, 1) < 8
-            msgbox('איכות התמונה נמוכה מדי (לא נמצאו מספיק נקודות). נסה תמונה אחרת.', 'שגיאה', 'error');
+            msgbox('איכות התמונה נמוכה מדי (מעט מדי נקודות).', 'שגיאה', 'error');
             continue;
         end
     end
 
-    %% 3. לוגיקה לפי בחירה
+    %% לוגיקה לפי בחירה
     switch choice
-        
-        % ---------------------------------------------------------
-        % אפשרות 1: רישום (Enrollment)
-        % ---------------------------------------------------------
+        % --- רישום ---
         case 1
-            name = inputdlg('הכנס שם משתמש לשמירה:', 'רישום משתמש');
+            name = inputdlg('הכנס שם משתמש:', 'רישום');
             if ~isempty(name) && ~isempty(name{1})
-                % קריאה לפונקציית עזר להוספה למאגר
-                add_user_to_db(dbFileName, name{1}, currentTemplate, fullfile(path, file));
+                add_user_to_db(dbFileName, name{1}, currentTemplate, fullPath);
             end
 
-        % ---------------------------------------------------------
-        % אפשרות 2: זיהוי (Identification)
-        % ---------------------------------------------------------
+        % --- זיהוי ---
         case 2
             if ~isfile(dbFileName)
-                msgbox('המאגר ריק. נא לבצע רישום תחילה.', 'שגיאה', 'error');
-                continue;
+                msgbox('המאגר ריק.', 'שגיאה', 'error'); continue;
             end
             
             load(dbFileName, 'fingerprintDB');
-            numUsers = length(fingerprintDB);
-            disp(['>> מתחיל סריקה מול ' num2str(numUsers) ' משתמשים...']);
             
-            % משתנים לשמירת התוצאה הטובה ביותר
             bestScore = 0;
-            bestMatchName = 'לא ידוע';
+            bestName = 'לא ידוע';
             bestAlignedPoints = [];
-            bestTemplateFound = [];
+            bestDbTemplate = [];
             
-            % חלון טעינה
-            wb = waitbar(0, 'סורק מאגר נתונים...');
-            
-            % === לולאת ההשוואה (1 מול N) ===
-            for i = 1:numUsers
-                waitbar(i/numUsers, wb, ['בודק מול: ' fingerprintDB(i).name]);
+            wb = waitbar(0, 'סורק...');
+            for i = 1:length(fingerprintDB)
+                waitbar(i/length(fingerprintDB), wb);
                 
-                dbTemplate = fingerprintDB(i).template;
+                % --- קריאה לפונקציית ההשוואה (שנמצאת ב-src) ---
+                % וודא ששם הפונקציה תואם לקובץ שלך (find_best_match או הגרסה האופטימלית)
+                [score, alignedData, ~] = find_best_match(fingerprintDB(i).template, currentTemplate, 0);
                 
-                % שימוש בפונקציית ההתאמה שלנו
-                % הפרמטר השלישי (סף) הוא 0 כי אנחנו רוצים את הציון המדויק להשוואה
-                [score, alignedData, ~] = find_best_match(dbTemplate, currentTemplate, 0);
-                
-                % אם זה הציון הכי גבוה שראינו עד עכשיו - נשמור אותו
                 if score > bestScore
                     bestScore = score;
-                    bestMatchName = fingerprintDB(i).name;
+                    bestName = fingerprintDB(i).name;
                     bestAlignedPoints = alignedData;
-                    bestTemplateFound = dbTemplate;
+                    bestDbTemplate = fingerprintDB(i).template;
                 end
             end
             close(wb);
             
-            % === שלב ההחלטה (Decision Logic) ===
+            % הצגת תוצאות
             if bestScore >= PASS_THRESHOLD
-                % -- עבר --
-                resultText = sprintf('התאמה נמצאה!\nמשתמש: %s\nציון: %d (מעל הסף %d)', ...
-                                     bestMatchName, bestScore, PASS_THRESHOLD);
-                msgbox(resultText, 'ACCESS GRANTED', 'help'); % אייקון ירוק/וי
-                
-                % הצגת התוצאה בגרף
-                visualize_result(currentImg, bestTemplateFound, bestAlignedPoints, bestMatchName, bestScore, true);
+                msgbox(['זוהה: ' bestName ' (ציון: ' num2str(bestScore) ')'], 'הצלחה');
+                visualize_match_result(currentImg, bestDbTemplate, bestAlignedPoints, bestName, bestScore);
             else
-                % -- נכשל --
-                resultText = sprintf('לא נמצאה התאמה.\nהציון הכי קרוב: %d (המשתמש: %s)\nנדרש מיניмум: %d', ...
-                                     bestScore, bestMatchName, PASS_THRESHOLD);
-                msgbox(resultText, 'ACCESS DENIED', 'error'); % אייקון אדום/שגיאה
-                
-                % הצגת הכישלון בגרף (אופציונלי)
-                visualize_result(currentImg, bestTemplateFound, bestAlignedPoints, bestMatchName, bestScore, false);
+                msgbox('לא נמצאה התאמה.', 'כישלון', 'error');
             end
             
-        % ---------------------------------------------------------
-        % אפשרות 3: הצגת רשימה
-        % ---------------------------------------------------------
+        % --- הצגה ---
         case 3
             if isfile(dbFileName)
                 load(dbFileName, 'fingerprintDB');
-                if isempty(fingerprintDB)
-                    msgbox('הקובץ קיים אך המאגר ריק.');
-                else
-                    names = {fingerprintDB.name};
-                    listdlg('ListString', names, 'Name', 'רשימת משתמשים', ...
-                            'PromptString', ['סה"כ רשומים: ' num2str(length(names))], ...
-                            'SelectionMode', 'single');
-                end
+                listdlg('ListString', {fingerprintDB.name}, 'Name', 'משתמשים רשומים');
             else
-                msgbox('המאגר טרם נוצר.');
+                msgbox('אין נתונים.');
             end
     end
 end
 
-%% ========================================================================
-%% פונקציות עזר (Helper Functions)
-%% ========================================================================
+%% --- פונקציות עזר פנימיות ל-Main ---
 
 function add_user_to_db(fname, name, template, path)
-    % יצירה או טעינה של המאגר בצורה בטוחה
     if isfile(fname)
         load(fname, 'fingerprintDB');
-        % וידוא שהשדה imagePath קיים (למקרה של גרסאות ישנות)
-        if ~isfield(fingerprintDB, 'imagePath')
-            [fingerprintDB(:).imagePath] = deal('');
-        end
+        if ~isfield(fingerprintDB, 'imagePath'), [fingerprintDB(:).imagePath] = deal(''); end
     else
         fingerprintDB = struct('name', {}, 'template', {}, 'imagePath', {});
     end
@@ -161,32 +133,19 @@ function add_user_to_db(fname, name, template, path)
     newEntry.name = name;
     newEntry.template = template;
     newEntry.imagePath = path;
-    
     fingerprintDB(end+1) = newEntry;
+    
     save(fname, 'fingerprintDB');
-    msgbox(['המשתמש ' name ' נשמר בהצלחה!'], 'Success');
+    msgbox('נשמר בהצלחה!');
 end
 
-function visualize_result(img, dbTemp, alignedInput, name, score, isPass)
-    figure('Name', 'Authentication Result', 'NumberTitle', 'off');
-    imshow(img); hold on;
-    
-    if isPass
-        titleColor = 'g'; % ירוק
-        statusText = ['ACCESS GRANTED: ' name];
-    else
-        titleColor = 'r'; % אדום
-        statusText = ['ACCESS DENIED (Best guess: ' name ')'];
-    end
-    
-    title({statusText, ['Score: ' num2str(score)]}, 'Color', titleColor, 'FontSize', 14, 'FontWeight', 'bold');
-    
-    if ~isempty(dbTemp) && ~isempty(alignedInput)
-        % ציור הנקודות מהמאגר (אדום - המקור)
-        plot(dbTemp(:,1), dbTemp(:,2), 'ro', 'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', 'Database Template');
-        % ציור הנקודות מהסריקה הנוכחית (ירוק - אחרי הזזה)
-        plot(alignedInput(:,1), alignedInput(:,2), 'g+', 'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', 'Input (Aligned)');
-        legend show;
+function visualize_match_result(img, dbTemp, alignedInput, name, score)
+    figure; imshow(img); hold on;
+    title(['Match: ' name ' (Score: ' num2str(score) ')']);
+    if ~isempty(dbTemp)
+        plot(dbTemp(:,1), dbTemp(:,2), 'ro', 'LineWidth', 2);
+        plot(alignedInput(:,1), alignedInput(:,2), 'g+');
+        legend('Database', 'Input (Aligned)');
     end
     hold off;
 end
