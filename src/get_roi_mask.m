@@ -1,24 +1,31 @@
 function mask = get_roi_mask(skeletonImg)
     % get_roi_mask - יוצרת מסיכה בינארית של אזור האצבע
-    % קלט: תמונת שלד (או בינארית)
-    % פלט: מסיכה (1=אזור האצבע המרכזי, 0=רקע וקצוות)
-
-    % 1. הופכים ללוגי (אם זה לא כבר)
-    bin = ~logical(skeletonImg); 
+    % משתמשת בהגדרות מתוך config.m
     
-    % 2. סגירה מורפולוגית (Closing)
+    % 1. טעינת הגדרות
+    cfg = get_config();
+    closeDiskSize = cfg.roi.closing_size; % למשל 15
+    erodeDiskSize = cfg.roi.erosion_size; % למשל 10
+    
+    % 2. המרה ללוגי
+    % הערה: אנו מניחים שהרכסים הם 1 (לבן) והרקע 0 (שחור).
+    if ~islogical(skeletonImg)
+        bin = imbinarize(skeletonImg);
+    else
+        bin = skeletonImg;
+    end
+    
+    % 3. סגירה מורפולוגית (Closing)
     % מחברים את כל הקווים לגוש אחד גדול ולבן
-    % משתמשים בדיסק בגודל 15 כדי לגשר על המרווחים בין הרכסים
-    closedImg = imclose(bin, strel('disk', 15));
+    closedImg = imclose(bin, strel('disk', closeDiskSize));
     
-    % 3. מילוי חורים (Fill Holes)
+    % 4. מילוי חורים (Fill Holes)
     % אם נשארו "חורים" שחורים בתוך האצבע - ממלאים אותם
     filledImg = imfill(closedImg, 'holes');
     
-    % 4. כיווץ (Erosion) - השלב הקריטי!
-    % אנחנו מקטינים את האזור הלבן פנימה ב-10 פיקסלים.
-    % זה מבטיח שכל נקודות ה"סיום" שנוצרו בקצה האצבע ייפלו מחוץ למסיכה.
-    mask = imerode(filledImg, strel('disk', 10));
+    % 5. כיווץ (Erosion) - השלב הקריטי!
+    % מקטינים את האזור הלבן פנימה כדי להעיף קצוות מזויפים
+    mask = imerode(filledImg, strel('disk', erodeDiskSize));
     
     % המרה ללוגי סופי
     mask = logical(mask);

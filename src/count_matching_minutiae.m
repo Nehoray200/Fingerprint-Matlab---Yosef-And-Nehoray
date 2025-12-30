@@ -1,13 +1,16 @@
-function M = count_matching_minutiae(template, alignedInput)
-    % count_matching_minutiae - ספירת זוגות תואמים (M) לפי החוקים שהגדרת
-    % קלט: תבנית המאגר (D), והקלט המיושר (T')
+function M = count_matching_minutiae(template, alignedInput, cfg)
+    % count_matching_minutiae - ספירת זוגות תואמים (M) לפי הגדרות Config
+    % קלט:
+    %   template     - תבנית המאגר (D)
+    %   alignedInput - הקלט המיושר (T')
+    %   cfg          - מבנה ההגדרות (מ-config.m)
     % פלט: M - מספר הזוגות שנמצאו
     
     M = 0;
     
-    % --- תנאי סף (Thresholds) ---
-    r0 = 12;             % סף מרחק (פיקסלים) - גודל התיבה התוחמת
-    theta0 = deg2rad(15); % סף זווית (רדיאנים)
+    % --- שליפת תנאי סף מקובץ ההגדרות ---
+    r0 = cfg.match.max_dist;        % סף מרחק (בפיקסלים)
+    theta0 = cfg.match.max_ang_rad; % סף זווית (ברדיאנים)
     
     numT = size(alignedInput, 1); % NT
     numD = size(template, 1);     % ND
@@ -39,7 +42,7 @@ function M = count_matching_minutiae(template, alignedInput)
             
             if dist < r0
                 % 3. בדיקת זווית (Direction Difference)
-                % חישוב ההפרש המינימלי במעגל (בין -pi ל-pi)
+                % חישוב ההפרש המינימלי במעגל
                 angleDiff = abs(mod(inputPoint(4) - dbPoint(4) + pi, 2*pi) - pi);
                 
                 if angleDiff < theta0

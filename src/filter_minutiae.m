@@ -9,54 +9,55 @@ function cleanList = filter_minutiae(minutiaeList, roiMask)
     
     % --- 1. טעינת הגדרות מקובץ config.m ---
     cfg = get_config();
-    minDistance = cfg.filter.min_distance; % שימוש בערך מההגדרות (למשל 6)
+    minDistSq = cfg.filter.min_distance^2; % עבודה עם מרחק בריבוע לביצועים
+    margin    = cfg.filter.border_margin;  % שוליים ביטחון מקצה התמונה
     
-    %% שלב 1: סינון לפי מסיכה (ROI)
-    X = round(minutiaeList(:, 1)); % מעגלים למספר שלם
+    %% שלב 1: סינון לפי מסיכה (ROI) וגבולות תמונה
+    X = round(minutiaeList(:, 1));
     Y = round(minutiaeList(:, 2));
     
     [rows, cols] = size(roiMask);
     
-    % בדיקה שהנקודות בתוך גבולות התמונה (למניעת קריסה)
-    valid_bounds = (X > 0) & (X <= cols) & (Y > 0) & (Y <= rows);
+    % בדיקה שהנקודות בתוך גבולות התמונה + מרווח ביטחון (Margin)
+    valid_bounds = (X > margin) & (X <= cols - margin) & ...
+                   (Y > margin) & (Y <= rows - margin);
     
-    % בדיקה מול המסיכה (ROI)
+    % בדיקה מול המסיכה (ROI) - רק עבור נקודות שבתוך הגבולות
     valid_roi = false(size(X));
     
     if any(valid_bounds)
-        % המרת קואורדינטות לאינדקס ליניארי לבדיקה מהירה
+        % המרת קואורדינטות לאינדקס ליניארי
         indices = sub2ind([rows, cols], Y(valid_bounds), X(valid_bounds));
         valid_roi(valid_bounds) = roiMask(indices) == 1;
     end
     
-    % משאירים רק את הנקודות שנמצאות בתוך האזור הלבן
+    % עדכון הרשימה: רק נקודות חוקיות נשארות
     minutiaeList = minutiaeList(valid_roi, :);
     
-    %% שלב 2: סינון מרחק (Distance Filter)
-    % מסירים נקודות שקרובות מדי אחת לשניה (רעש)
+    %% שלב 2: סינון צפיפות (Distance Filter)
+    % הסרת נקודות שקרובות מדי אחת לשניה (רעש)
     
-    % מיון לפי סוג (מעדיפים לשמור פיצולים על פני סיומות במקרה של קונפליקט)
+    % מיון לפי סוג (כדי לתת עדיפות לסוגים מסוימים אם צריך, או סתם לסדר)
     [~, sortIdx] = sort(minutiaeList(:, 3), 'descend');
     minutiaeList = minutiaeList(sortIdx, :);
     
     numPoints = size(minutiaeList, 1);
-    keep = true(numPoints, 1); % וקטור בוליאני: מי נשאר?
+    keep = true(numPoints, 1); 
     
     for i = 1:numPoints
-        if ~keep(i), continue; end % אם הנקודה כבר נמחקה, דלג
+        if ~keep(i), continue; end 
         
-        % חישוב מרחק מהנקודה הנוכחית לכל השאר
-        dists = sqrt((minutiaeList(:,1) - minutiaeList(i,1)).^2 + ...
-                     (minutiaeList(:,2) - minutiaeList(i,2)).^2);
+        % חישוב מרחק בריבוע (מהיר יותר מ-sqrt)
+        distsSq = (minutiaeList(:,1) - minutiaeList(i,1)).^2 + ...
+                  (minutiaeList(:,2) - minutiaeList(i,2)).^2;
         
         % מציאת נקודות קרובות מדי (שאינן הנקודה עצמה)
-        % כאן משתמשים ב-minDistance שהגיע מה-Config!
-        too_close = (dists < minDistance) & (dists > 0);
+        too_close = (distsSq < minDistSq) & (distsSq > 0);
         
         % מחיקת השכנים הקרובים
         keep(too_close) = false; 
     end
     
-    % החזרת הרשימה הנקייה הסופית
+    % התוצאה הסופית
     cleanList = minutiaeList(keep, :);
 end

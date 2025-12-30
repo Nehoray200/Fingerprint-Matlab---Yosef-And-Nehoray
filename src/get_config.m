@@ -23,6 +23,13 @@ function cfg = get_config()
     cfg.match.max_ang_deg = 20;
     cfg.match.max_ang_rad = deg2rad(20); % המרה אוטומטית לרדיאנים
     
+    %% הגדרות מסיכה (ROI)
+    % גודל הדיסק לסגירת רווחים בין הרכסים (כדי ליצור גוש אחד)
+    cfg.roi.closing_size = 15; 
+    
+    % כמה לכרסם מקצוות המסיכה פנימה (כדי להעיף רעשי מסגרת)
+    cfg.roi.erosion_size = 10;
+    
     % --- פרמטרים לנוסחת הניקוד החכמה (Weighted Score) ---
     % קבועי דעיכה (Sigma) - קובעים כמה הציון יורד כשהמרחק גדל
     cfg.score.sigma_dist = 5;
