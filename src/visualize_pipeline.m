@@ -1,88 +1,68 @@
 function visualize_pipeline(img)
-    % visualize_pipeline - מעודכן לפי הלוגיקה החדשה של process_fingerprint
-    % כולל adapthisteq, ניקוי עדין (5), וגיזום ענפים (Spur 8)
-
-    cfg = get_config(); 
+    % visualize_pipeline - מציג את תהליך העיבוד החסכוני
     
-    figure('Name', 'Updated Pipeline Debugger', 'Units', 'normalized', 'Position', [0 0 1 1]);
+    cfg = get_config();
+    figure('Name', 'Pipeline: Optimization (Mask Early)', 'Units', 'normalized', 'Position', [0 0 1 1]);
     
-    %% 1. המרה ושיפור
+    % 1. מקור
     if size(img, 3) == 3, img = rgb2gray(img); end
     img = im2double(img);
     
-    % שיפור ניגודיות (כמו ב-process_fingerprint החדש)
-    imgEnh = adapthisteq(img); 
-    imgEnh = imgaussfilt(imgEnh, 0.5); % פילטר עדין
+    subplot(2, 4, 1); imshow(img); title('1. תמונה מקורית');
     
-    subplot(2, 4, 1); imshow(imgEnh); title('1. שיפור (CLAHE + Gauss 0.5)');
-
-    %% 2. בינאריזציה
-    % רגישות 0.65
-    binaryImg = imbinarize(imgEnh, 'adaptive', 'Sensitivity', 0.65);
+    % 2. מסיכה
+    roiMask = get_roi_mask(img);
+    subplot(2, 4, 2); imshow(roiMask); title('2. מסיכה (Texture)');
     
-    subplot(2, 4, 2); imshow(binaryImg); title('2. בינאריזציה (Sens 0.65)');
+    % 3. עיבוד וחיתוך
+    imgEnh = adapthisteq(img);
+    imgEnh = imgaussfilt(imgEnh, 0.5);
+    bin = imbinarize(imgEnh, 'adaptive', 'Sensitivity', 0.65);
     
-    %% 3. ניקוי רעשים
-    % סגירת חורים קטנים (5)
-    binaryClean = bwareaopen(binaryImg, 5); 
-    % מחיקת רעש רקע (5)
-    binaryClean = ~bwareaopen(~binaryClean, 5); 
+    bin = bwareaopen(bin, 10);
+    bin = ~bwareaopen(~bin, 10);
     
-    subplot(2, 4, 3); imshow(binaryClean); title('3. ניקוי עדין (Area 5)');
-
-    %% 4. שלד וגיזום (Spur)
-    skeletonImg = bwmorph(binaryClean, 'thin', Inf);
+    % החיתוך המוקדם
+    binMasked = bin & roiMask;
     
-    % מחיקת ענפים קטנים (Spur 8) - השינוי המהותי שמנקה את ה"קוצים"
-    skeletonImg = bwmorph(skeletonImg, 'spur', 8); 
-    skeletonImg = bwmorph(skeletonImg, 'clean');
+    subplot(2, 4, 3); imshow(binMasked); 
+    title('3. בינארי חתוך (רק בתוך המסיכה)');
     
-    subplot(2, 4, 4); imshow(skeletonImg); title('4. שלד אחרי גיזום (Spur 8)');
-
-    %% 5. מסיכה (ROI)
-    try
-        roiMask = get_roi_mask(skeletonImg);
-        % כרסום מינימלי (2) - שומר על הקצוות
-        se = strel('disk', 2); 
-        roiMaskEroded = imerode(roiMask, se);
-        
-        rgbMask = cat(3, skeletonImg, skeletonImg .* roiMaskEroded, skeletonImg .* roiMaskEroded);
-        subplot(2, 4, 5); imshow(rgbMask); title('5. מסיכה (Erosion 2)');
-    catch
-        roiMaskEroded = true(size(skeletonImg));
-        subplot(2, 4, 5); imshow(skeletonImg); title('5. (ROI Failed)');
-    end
-
-    %% 6. חילוץ גולמי
-    rawMinutiae = extract_minutiae_features(skeletonImg);
+    % 4. שלד
+    skel = bwmorph(binMasked, 'thin', Inf);
+    skel = bwmorph(skel, 'spur', 8);
+    skel = bwmorph(skel, 'clean');
     
+    subplot(2, 4, 4); imshow(skel); title('4. שלד נקי');
+    
+    % 5. חילוץ (עכשיו זה יהיה נקי!)
+    rawPts = extract_minutiae_features(skel);
+    subplot(2, 4, 5); imshow(img); hold on;
+    if ~isempty(rawPts), plot(rawPts(:,1), rawPts(:,2), 'rx'); end
+    title(['5. גולמי (' num2str(size(rawPts,1)) ') - נקי מרעש רקע']);
+    
+    % 6. סינון סופי
+    finalPts = filter_minutiae(rawPts, roiMask);
     subplot(2, 4, 6); imshow(img); hold on;
-    if ~isempty(rawMinutiae)
-        plot(rawMinutiae(:,1), rawMinutiae(:,2), 'rx');
+    if ~isempty(finalPts)
+        plot(finalPts(finalPts(:,3)==1,1), finalPts(finalPts(:,3)==1,2), 'ro', 'LineWidth', 2);
+        plot(finalPts(finalPts(:,3)==2,1), finalPts(finalPts(:,3)==2,2), 'g+', 'LineWidth', 2);
     end
-    title(['6. חילוץ גולמי (' num2str(size(rawMinutiae,1)) ')']);
-    hold off;
-
-    %% 7. סינון סופי
-    template = filter_minutiae(rawMinutiae, roiMaskEroded);
+    title(['6. סופי (' num2str(size(finalPts,1)) ')']);
     
-    subplot(2, 4, 7); imshow(img); hold on;
-    if ~isempty(template)
-        term = template(template(:,3) == 1, :);
-        bif  = template(template(:,3) == 2, :);
-        plot(term(:,1), term(:,2), 'ro', 'LineWidth', 2);
-        plot(bif(:,1), bif(:,2), 'g+', 'LineWidth', 2);
+    % 7. כיוונים
+    subplot(2, 4, 7); imshow(skel); hold on;
+    if ~isempty(finalPts)
+        quiver(finalPts(:,1), finalPts(:,2), cos(finalPts(:,4))*15, -sin(finalPts(:,4))*15, 0, 'y');
     end
-    title(['7. סופי (' num2str(size(template,1)) ')']);
-    hold off;
-
-    %% 8. כיוונים
-    subplot(2, 4, 8); imshow(skeletonImg); hold on;
-    if ~isempty(template)
-        quiver(template(:,1), template(:,2), ...
-               cos(template(:,4))*15, -sin(template(:,4))*15, ...
-               0, 'y', 'LineWidth', 1.5);
+    title('7. כיוונים');
+    
+    % 8. אימות
+    [pT, ~, ~, ~] = process_fingerprint(img);
+    subplot(2, 4, 8); axis off;
+    if size(finalPts,1) == size(pT,1)
+        text(0.1,0.5,'✅ תואם','Color','g','FontSize',14);
+    else
+        text(0.1,0.5,'❌ שגיאה','Color','r','FontSize',14);
     end
-    title('8. כיוונים (Orientation)');
-    hold off;
 end

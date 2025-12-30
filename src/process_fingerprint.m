@@ -1,43 +1,38 @@
 function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img)
-    % process_fingerprint - גרסה סלחנית (לוכדת מקסימום נקודות)
+    % process_fingerprint - גרסה אופטימלית: חיתוך מוקדם עם המסיכה
     
-    % 1. המרה ושיפור
+    % 1. המרה לאפור
     if size(img, 3) == 3, img = rgb2gray(img); end
     img = im2double(img);
     
-    % שיפור ניגודיות (עוזר מאוד לתמונות חיוורות)
-    img = adapthisteq(img); 
-    imgEnhanced = imgaussfilt(img, 0.5); % פילטר עדין יותר
+    % 2. חישוב מסיכה (השלב הראשון והחשוב)
+    roiMask = get_roi_mask(img);
     
-    % 2. בינאריזציה רגישה
-    % Sensitivity גבוה (0.65) אומר: תחשוב שיותר דברים הם "רכס" ולא רקע
+    % 3. עיבוד ובינאריזציה
+    img = adapthisteq(img);
+    imgEnhanced = imgaussfilt(img, 0.5);
     binaryImg = imbinarize(imgEnhanced, 'adaptive', 'Sensitivity', 0.65);
     
-    % --- ניקוי עדין בלבד ---
-    % סגירת חורים קטנים בתוך הרכסים
-    binaryImg = bwareaopen(binaryImg, 5); 
-    % מחיקת רעש רקע (רק נקודות ממש קטנות)
-    binaryImg = ~bwareaopen(~binaryImg, 5); 
+    % ניקוי ראשוני
+    binaryImg = bwareaopen(binaryImg, 10);
+    binaryImg = ~bwareaopen(~binaryImg, 10);
     
-    % 3. יצירת שלד
+    % --- האופטימיזציה שלך! ---
+    % מוחקים את כל מה שמחוץ למסיכה *עכשיו*, לפני יצירת השלד.
+    binaryImg = binaryImg & roiMask;
+    
+    % 4. יצירת שלד (עכשיו השלד ייווצר רק בתוך האצבע)
     skeletonImg = bwmorph(binaryImg, 'thin', Inf);
-% מחיקת ענפים קטנים (באורך פחות מ-8 פיקסלים) שהם בדרך כלל רעש
-skeletonImg = bwmorph(skeletonImg, 'spur', 8); 
-skeletonImg = bwmorph(skeletonImg, 'clean');
+    skeletonImg = bwmorph(skeletonImg, 'spur', 8); 
+    skeletonImg = bwmorph(skeletonImg, 'clean');
     
-    % 4. מסיכה (ROI) מקסימלית
-    roiMask = get_roi_mask(skeletonImg);
-    
-    % כרסום מינימלי (כמעט לא נוגעים בשוליים)
-    se = strel('disk', 2); 
-    roiMask = imerode(roiMask, se);
-    
-    % חילוץ
+    % 5. חילוץ
+    % עכשיו rawMinutiae יכיל הרבה פחות נקודות זבל
     rawMinutiae = extract_minutiae_features(skeletonImg);
     
-    % סינון
+    % 6. סינון סופי
+    % עדיין צריך את זה כדי להעיף נקודות שנוצרו בדיוק על קו החיתוך
     template = filter_minutiae(rawMinutiae, roiMask);
     
-    % 5. מתארים
     descriptors = compute_descriptors(template);
 end

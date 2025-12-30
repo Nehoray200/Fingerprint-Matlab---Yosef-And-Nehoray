@@ -31,6 +31,7 @@ cfg.filter.min_distance = 10; % נקודות לא יכולות להיות קרו
     cfg.score.sigma_desc = 45;     
 
     %% הגדרות מסיכה (ROI)
+    cfg.roi.erosion_size = 6;
     cfg.roi.closing_size = 20; 
     cfg.roi.erosion_size = 5;
 end

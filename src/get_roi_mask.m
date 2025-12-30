@@ -1,32 +1,36 @@
-function mask = get_roi_mask(skeletonImg)
-    % get_roi_mask - יוצרת מסיכה בינארית של אזור האצבע
-    % משתמשת בהגדרות מתוך config.m
+function mask = get_roi_mask(img)
+    % get_roi_mask - יצירת מסיכה ראשונית לפי טקסטורה (Texture Based)
+    % מקבל את התמונה המקורית (Grayscale) ומחזיר את אזור האצבע
     
-    % 1. טעינת הגדרות
     cfg = get_config();
-    closeDiskSize = cfg.roi.closing_size; % למשל 15
-    erodeDiskSize = cfg.roi.erosion_size; % למשל 10
     
-    % 2. המרה ללוגי
-    % הערה: אנו מניחים שהרכסים הם 1 (לבן) והרקע 0 (שחור).
-    if ~islogical(skeletonImg)
-        bin = imbinarize(skeletonImg);
-    else
-        bin = skeletonImg;
+    % 1. זיהוי אזורים עם "פעילות" (פסים)
+    % rangefilt מחזיר ערכים גבוהים איפה שיש שינויים חדים (כמו בטביעת אצבע)
+    textureMap = rangefilt(img);
+    
+    % 2. בינאריזציה של הטקסטורה
+    % מוצאים סף אוטומטי שמפריד בין אזור חלק לאזור מחוספס
+    level = graythresh(textureMap);
+    mask = imbinarize(textureMap, level);
+    
+    % 3. ניקוי ועיצוב המסיכה
+    % מילוי חורים בתוך האצבע
+    mask = imfill(mask, 'holes');
+    
+    % חיבור אזורים קרובים (למקרה שהטביעה מקוטעת)
+    seClose = strel('disk', 10);
+    mask = imclose(mask, seClose);
+    
+    % 4. השארת הגוש הגדול בלבד (האצבע)
+    % מנקה רעשים קטנים ברקע
+    mask = bwareafilt(mask, 1);
+    
+    % 5. כרסום שוליים (Erosion)
+    % כדי לא לקחת נקודות שנמצאות ממש על הקצה הבעייתי
+    if cfg.roi.erosion_size > 0
+        seErode = strel('disk', cfg.roi.erosion_size);
+        mask = imerode(mask, seErode);
     end
     
-    % 3. סגירה מורפולוגית (Closing)
-    % מחברים את כל הקווים לגוש אחד גדול ולבן
-    closedImg = imclose(bin, strel('disk', closeDiskSize));
-    
-    % 4. מילוי חורים (Fill Holes)
-    % אם נשארו "חורים" שחורים בתוך האצבע - ממלאים אותם
-    filledImg = imfill(closedImg, 'holes');
-    
-    % 5. כיווץ (Erosion) - השלב הקריטי!
-    % מקטינים את האזור הלבן פנימה כדי להעיף קצוות מזויפים
-    mask = imerode(filledImg, strel('disk', erodeDiskSize));
-    
-    % המרה ללוגי סופי
     mask = logical(mask);
 end
