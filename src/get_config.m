@@ -6,9 +6,8 @@ function cfg = get_config()
     
     %% הגדרות סינון (Preprocessing)
     % סינון נקודות קרובות מדי (Artifacts) - מבוסס על המאמר Post-processing
-    cfg.filter.min_distance = 6; 
     cfg.filter.border_margin = 15;
-
+cfg.filter.min_distance = 10; % נקודות לא יכולות להיות קרובות מ-10 פיקסלים
     %% הגדרות התאמה (Matching)
     % סף המעבר:
     % ציון 8.0 ומעלה משקף סבירות גבוהה ל-10 עד 12 נקודות תואמות.

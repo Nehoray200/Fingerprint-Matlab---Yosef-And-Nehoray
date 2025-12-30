@@ -21,9 +21,9 @@ function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img
     
     % 3. יצירת שלד
     skeletonImg = bwmorph(binaryImg, 'thin', Inf);
-    
-    % ניקוי בסיסי (בלי 'spur' שמוחק קצוות)
-    skeletonImg = bwmorph(skeletonImg, 'clean');
+% מחיקת ענפים קטנים (באורך פחות מ-8 פיקסלים) שהם בדרך כלל רעש
+skeletonImg = bwmorph(skeletonImg, 'spur', 8); 
+skeletonImg = bwmorph(skeletonImg, 'clean');
     
     % 4. מסיכה (ROI) מקסימלית
     roiMask = get_roi_mask(skeletonImg);
