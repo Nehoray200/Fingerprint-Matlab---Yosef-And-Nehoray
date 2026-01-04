@@ -1,5 +1,5 @@
 function cleanList = filter_minutiae(minutiaeList, roiMask)
-    % filter_minutiae - גרסה משופרת: מתעלמת מנקודות על קצה המסיכה
+    % filter_minutiae - מסנן גם שוליים וגם כפילויות
     
     if isempty(minutiaeList)
         cleanList = [];
@@ -7,58 +7,53 @@ function cleanList = filter_minutiae(minutiaeList, roiMask)
     end
     
     cfg = get_config();
-    minDistSq = cfg.filter.min_distance^2; 
-    margin    = cfg.filter.border_margin;  % המרווח שנגדיר בקונפיג (למשל 10 או 15)
     
-    %% שלב 1: יצירת "אזור ביטחון" (Safe Zone)
-    % הבעיה: החיתוך של המסיכה יוצר נקודות סיום מזויפות על הקצה.
-    % הפתרון: אנחנו מכרסמים את המסיכה פנימה ב-'margin' פיקסלים.
-    % כל נקודה שנופלת באזור שנמחק - נחשבת לא אמינה ונזרקת.
+    % --- שלב 1: ניקוי שוליים (לפי מרחק אוקלידי) ---
+    margin = cfg.filter.border_margin; 
     
-    if margin > 0
-        se = strel('disk', margin);
-        safeMask = imerode(roiMask, se);
-    else
-        safeMask = roiMask;
-    end
+    % חישוב מרחק מדויק מהקצה
+    maskFilled = imfill(roiMask, 'holes');
+    distMap = bwdist(~maskFilled);
     
-    %% שלב 2: סינון לפי המסיכה הבטוחה
+    % בדיקת מיקום הנקודות
     X = round(minutiaeList(:, 1));
     Y = round(minutiaeList(:, 2));
+    [rows, cols] = size(distMap);
     
-    [rows, cols] = size(safeMask);
+    X = max(1, min(X, cols));
+    Y = max(1, min(Y, rows));
     
-    % בדיקה שהנקודות בתוך גבולות התמונה
-    valid_bounds = (X > 0) & (X <= cols) & (Y > 0) & (Y <= rows);
+    indices = sub2ind([rows, cols], Y, X);
+    pointDistances = distMap(indices);
     
-    valid_roi = false(size(X));
-    if any(valid_bounds)
-        indices = sub2ind([rows, cols], Y(valid_bounds), X(valid_bounds));
-        % בודקים מול safeMask (המקורסם) ולא מול roiMask המקורי
-        valid_roi(valid_bounds) = safeMask(indices) == 1;
-    end
+    % שמירה רק של מה שרחוק מהקצה
+    keep_mask = pointDistances > margin;
+    cleanList = minutiaeList(keep_mask, :);
     
-    minutiaeList = minutiaeList(valid_roi, :);
-    
-    %% שלב 3: סינון צפיפות (Distance Filter)
-    % מחיקת נקודות קרובות מדי אחת לשניה
-    
-    % מיון כדי לתעדף סוגים (אופציונלי, עוזר ליציבות)
-    [~, sortIdx] = sort(minutiaeList(:, 3), 'descend');
-    minutiaeList = minutiaeList(sortIdx, :);
-    
-    numPoints = size(minutiaeList, 1);
-    keep = true(numPoints, 1); 
-    
-    for i = 1:numPoints
-        if ~keep(i), continue; end 
+    % --- שלב 2: ניקוי כפילויות (זה מה שחסר לך!) ---
+    if ~isempty(cleanList)
+        % אנחנו נגדיר מרחק מינימלי קטן. כל מה שקרוב יותר מזה - יאוחד.
+        minDistSq = cfg.filter.min_distance^2;
         
-        distsSq = (minutiaeList(:,1) - minutiaeList(i,1)).^2 + ...
-                  (minutiaeList(:,2) - minutiaeList(i,2)).^2;
+        % מיון כדי לשמור על סדר אחיד
+        [~, sortIdx] = sort(cleanList(:, 3), 'descend');
+        cleanList = cleanList(sortIdx, :);
         
-        too_close = (distsSq < minDistSq) & (distsSq > 0);
-        keep(too_close) = false; 
+        numPoints = size(cleanList, 1);
+        keep = true(numPoints, 1);
+        
+        for i = 1:numPoints
+            if ~keep(i), continue; end
+            
+            % חישוב מרחק מול כל שאר הנקודות ברשימה
+            distsSq = (cleanList(:,1) - cleanList(i,1)).^2 + ...
+                      (cleanList(:,2) - cleanList(i,2)).^2;
+            
+            % אם מצאנו שכנים קרובים מדי (אבל לא הנקודה עצמה) -> נמחק אותם
+            too_close = (distsSq < minDistSq) & (distsSq > 0);
+            keep(too_close) = false;
+        end
+        
+        cleanList = cleanList(keep, :);
     end
-    
-    cleanList = minutiaeList(keep, :);
 end
