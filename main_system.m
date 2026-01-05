@@ -4,26 +4,15 @@
 clc; clear; close all;
 
 % --- 1. הגדרת נתיבים ---
-addpath(genpath('src')); % מוסיף את תיקיית src
-addpath('data');         % מוסיף את תיקיית התמונות
+% הוספת תיקיית ה-src ותת-התיקיות שלה
+addpath(genpath('src')); 
+% הוספת תיקיית התמונות
+addpath('data');         
 
 % --- 2. הגדרות מערכת ---
-dbFileName = 'fingerprint_database.mat';
-
-% טעינת קונפיגורציה (חובה ראשון!)
-if exist('get_config', 'file')
-    cfg = get_config();
-else
-    warning('קובץ config לא נמצא, משתמש בערכי ברירת מחדל.');
-    cfg.match.pass_threshold = 12; 
-end
-
-% קביעת סף המעבר
-if isfield(cfg, 'match') && isfield(cfg.match, 'pass_threshold')
-    PASS_THRESHOLD = cfg.match.pass_threshold;
-else
-    PASS_THRESHOLD = 12;
-end
+cfg = get_config();
+dbFileName = cfg.db_filename; % שימוש בשם מהקונפיגורציה
+PASS_THRESHOLD = cfg.match.pass_threshold;
 
 while true
     %% תפריט ראשי
@@ -39,7 +28,7 @@ while true
     end
     
     %% שלב משותף: טעינת תמונה ועיבוד (Pipeline)
-    currentData = []; % אתחול המבנה
+    currentData = []; 
     currentImg = [];
     
     if choice == 1 || choice == 2
@@ -47,7 +36,7 @@ while true
         [file, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Fingerprint Files'}, ...
                                  'בחר תמונת טביעת אצבע', 'data/');
         
-        if isequal(file, 0), continue; end % המשתמש ביטל
+        if isequal(file, 0), continue; end 
         
         fullPath = fullfile(path, file);
         currentImg = imread(fullPath);
@@ -55,11 +44,10 @@ while true
         % --- עיבוד התמונה ---
         disp('>> מעבד תמונה (Pipeline)...');
         try
-            % קריאה לפונקציה המעודכנת שמחזירה גם descriptors
-            % (הנחה: עדכנת את process_fingerprint.m לפי ההוראות הקודמות)
+            % עיבוד מלא: מחזיר גם את הנקודות (template) וגם את המתארים (descriptors)
             [template, ~, ~, descriptors] = process_fingerprint(currentImg);
             
-            % אריזת הנתונים למבנה מסודר להעברה
+            % אריזה למבנה נתונים
             currentData.minutiae = template;
             currentData.descriptors = descriptors;
             
@@ -68,7 +56,7 @@ while true
             continue;
         end
         
-        % בדיקת איכות בסיסית
+        % בדיקת איכות
         if size(currentData.minutiae, 1) < 8
             msgbox('איכות התמונה נמוכה מדי (מעט מדי נקודות).', 'שגיאה', 'error');
             continue;
@@ -81,7 +69,7 @@ while true
         case 1
             name = inputdlg('הכנס שם משתמש:', 'רישום');
             if ~isempty(name) && ~isempty(name{1})
-                % שליחת המבנה המלא (נקודות + מתארים) לפונקציית השמירה
+                % קריאה לפונקציה חיצונית בתיקיית src
                 add_user_to_db(dbFileName, name{1}, currentData, fullPath);
             end
             
@@ -94,7 +82,6 @@ while true
             
             load(dbFileName, 'fingerprintDB');
             
-            % אתחול משתנים למציאת ההתאמה הטובה ביותר
             bestScore = 0;
             bestName = 'לא ידוע';
             bestAlignedPoints = [];
@@ -105,20 +92,17 @@ while true
             for i = 1:length(fingerprintDB)
                 waitbar(i/length(fingerprintDB), wb);
                 
-                % הכנת הנתונים מהמאגר להשוואה
-                % (בודקים אם המאגר מכיל descriptors, למקרה שהוא ישן)
+                % הכנת נתונים מהמאגר
                 dbData.minutiae = fingerprintDB(i).template;
                 if isfield(fingerprintDB(i), 'descriptors')
                     dbData.descriptors = fingerprintDB(i).descriptors;
                 else
-                    % תמיכה לאחור או טיפול בשגיאה אם המאגר ישן
                     dbData.descriptors = []; 
                 end
                 
-                % קריאה לפונקציית ההשוואה
+                % השוואה
                 [score, alignedData, ~] = find_best_match(dbData, currentData, 0);
                 
-                % בדיקה אם זו התוצאה הכי טובה עד כה
                 if score > bestScore
                     bestScore = score;
                     bestName = fingerprintDB(i).name;
@@ -128,9 +112,10 @@ while true
             end
             close(wb);
             
-            % הצגת התוצאות
+            % תוצאות
             if bestScore >= PASS_THRESHOLD
                 msgbox(['זוהה: ' bestName ' (ציון: ' num2str(bestScore) ')'], 'הצלחה');
+                % קריאה לפונקציה חיצונית בתיקיית src
                 visualize_match_result(currentImg, bestDbTemplate, bestAlignedPoints, bestName, bestScore);
             else
                 msgbox(['לא נמצאה התאמה. הציון הגבוה ביותר: ' num2str(bestScore)], 'כישלון', 'error');
@@ -149,47 +134,4 @@ while true
                 msgbox('אין נתונים.');
             end
     end
-end
-
-%% --- פונקציות עזר פנימיות ל-Main ---
-
-function add_user_to_db(fname, name, dataStruct, path)
-    % פונקציה לשמירת משתמש חדש במאגר
-    if isfile(fname)
-        load(fname, 'fingerprintDB');
-        % אם זה מאגר ישן בלי השדה descriptors, נוסיף אותו
-        if ~isfield(fingerprintDB, 'descriptors')
-             [fingerprintDB(:).descriptors] = deal([]); 
-        end
-    else
-        % יצירת מאגר חדש אם לא קיים
-        fingerprintDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {});
-    end
-    
-    newEntry.name = name;
-    newEntry.template = dataStruct.minutiae;       % הנקודות (x,y,type,theta)
-    newEntry.descriptors = dataStruct.descriptors; % המתארים החדשים (Feature Vectors)
-    newEntry.imagePath = path;
-    
-    fingerprintDB(end+1) = newEntry;
-    
-    save(fname, 'fingerprintDB');
-    msgbox('משתמש נשמר בהצלחה!');
-end
-
-function visualize_match_result(img, dbTemp, alignedInput, name, score)
-    % פונקציה להצגה גרפית של ההתאמה
-    figure('Name', 'תוצאת זיהוי', 'NumberTitle', 'off');
-    imshow(img); hold on;
-    title(['Match: ' name ' (Score: ' num2str(score) ')']);
-    
-    if ~isempty(dbTemp) && ~isempty(alignedInput)
-        % הצגת הנקודות מהמאגר (אדום - עיגול)
-        plot(dbTemp(:,1), dbTemp(:,2), 'ro', 'LineWidth', 2, 'MarkerSize', 8);
-        % הצגת הנקודות מהקלט אחרי היישור (ירוק - פלוס)
-        plot(alignedInput(:,1), alignedInput(:,2), 'g+', 'LineWidth', 2, 'MarkerSize', 8);
-        
-        legend('Database Template', 'Input (Aligned)', 'Location', 'best');
-    end
-    hold off;
 end

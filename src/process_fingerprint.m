@@ -1,5 +1,4 @@
 function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img)
-    % process_fingerprint - גרסה מתוקנת למניעת "רכסים חלולים"
     
     % 1. המרה לאפור ונרמול
     if size(img, 3) == 3, img = rgb2gray(img); end
