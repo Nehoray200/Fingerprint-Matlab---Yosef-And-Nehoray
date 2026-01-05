@@ -9,7 +9,7 @@ function cfg = get_config()
     cfg.filter.border_margin = 25;
     
     % min_distance: מרחק מינימלי בין נקודות למניעת כפילויות.
-    cfg.filter.min_distance = 10; 
+    cfg.filter.min_distance = 7; 
     
     %% הגדרות התאמה (Matching)
     cfg.match.pass_threshold = 12.0;    
