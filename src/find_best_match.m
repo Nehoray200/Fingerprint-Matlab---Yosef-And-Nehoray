@@ -1,5 +1,5 @@
 function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData, inputData, manualThreshold)
-    % find_best_match - גרסה מנורמלת (סולם 0-100)
+    % find_best_match - גרסה מנורמלת ונקייה
     
     T_pts = templateData.minutiae;
     T_desc = templateData.descriptors;
@@ -10,12 +10,13 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
     scoreThreshold = cfg.match.pass_threshold;
     if nargin >= 3 && manualThreshold > 0, scoreThreshold = manualThreshold; end
     
-    % בדיקת שפיות - מינימום נקודות כדי להתחיל
+    % בדיקת שפיות
     if size(T_pts,1) < 5 || size(I_pts,1) < 5
         finalScore = 0; bestAlignedInput=[]; isMatch=false; return;
     end
     
-    distThrSq = cfg.match.max_dist^2;
+    % --- שורה שנמחקה: distThrSq = cfg.match.max_dist^2; ---
+    
     angThr = cfg.match.max_ang_rad;
     sigmaDist = cfg.score.sigma_dist;
     sigmaDesc = cfg.score.sigma_desc;

@@ -1,5 +1,6 @@
 function visualize_pipeline(img)
     % visualize_pipeline - ויזואליזציה מסונכרנת עם התיקון לרכסים חלולים
+    % ועם קובץ הקונפיגורציה המרכזי (cfg)
     
     cfg = get_config(); 
     
@@ -15,12 +16,14 @@ function visualize_pipeline(img)
     subplot(2, 4, 2); imshow(roiMask); title('2. מסיכה');
     
     % 3. בינארי חתוך (הלוגיקה המתוקנת)
-    % שיפור קונטרסט וטשטוש עדין
+    % שיפור קונטרסט וטשטוש עדין (לוקח פרמטרים מה-cfg)
     imgEnh = adapthisteq(img);
-    imgEnh = imgaussfilt(imgEnh, 0.8);
+    imgEnh = imgaussfilt(imgEnh, cfg.preprocess.gauss_sigma);
     
-    % בינאריזציה ברגישות נמוכה יותר למניעת חורים
-    bin = imbinarize(imgEnh, 'adaptive', 'Sensitivity', 0.50, 'ForegroundPolarity', 'dark');
+    % בינאריזציה (לוקח רגישות מה-cfg)
+    bin = imbinarize(imgEnh, 'adaptive', ...
+        'Sensitivity', cfg.preprocess.bin_sensitivity, ...
+        'ForegroundPolarity', 'dark');
     
     % --- התיקון לרכסים חלולים ---
     se = strel('disk', 1);
@@ -41,8 +44,9 @@ function visualize_pipeline(img)
     subplot(2, 4, 4); imshow(skel); title('4. שלד');
     
     % 5. גולמי (תצוגה כחולה)
-    % קורא לפונקציה extract_minutiae_features המעודכנת שלך
-    rawPts = extract_minutiae_features(skel);
+    % מעבירים את cfg כדי שידע כמה צעדים ללכת בחישוב הזווית
+    rawPts = extract_minutiae_features(skel, cfg);
+    
     subplot(2, 4, 5); imshow(img); hold on;
     if ~isempty(rawPts)
         plot(rawPts(:,1), rawPts(:,2), 'b.', 'MarkerSize', 5); 
@@ -50,7 +54,9 @@ function visualize_pipeline(img)
     title(['5. גולמי (' num2str(size(rawPts,1)) ')']);
     
     % 6. סופי (עם קו הגבול ודיבוג צבעים)
-    finalPts = filter_minutiae(rawPts, roiMask);
+    % מעבירים את cfg כדי להשתמש בפרמטרי הסינון
+    finalPts = filter_minutiae(rawPts, roiMask, cfg);
+    
     subplot(2, 4, 6); imshow(img); hold on;
     
     % --- ציור קו הגבול (המרחק האוקלידי) ---
@@ -70,14 +76,11 @@ function visualize_pipeline(img)
     
     % --- ציור הנקודות ---
     if ~isempty(finalPts)
-        % 1. נקודות בסיס (מגנטה) - לוודא שהן קיימות
-        % plot(finalPts(:,1), finalPts(:,2), 'mo', 'LineWidth', 2, 'MarkerSize', 8);
-        
-        % 2. הדפסת סוגים לקונסול (לדיבוג)
+        % הדפסת סוגים לקונסול (לדיבוג)
         types = unique(finalPts(:,3));
         fprintf('Debug: Found types inside finalPts: %s\n', mat2str(types'));
         
-        % 3. צביעה לפי סוג
+        % צביעה לפי סוג
         % סיומות (Type 1) - עיגול אדום
         termIdx = finalPts(:,3) == 1;
         if any(termIdx)
@@ -85,7 +88,6 @@ function visualize_pipeline(img)
         end
         
         % פיצולים (Type 3) - כוכבית ירוקה
-        % שימו לב: באלגוריתם ה-CN שלנו פיצול הוא 3, לא 2
         bifIdx = finalPts(:,3) == 3;
         if any(bifIdx)
             plot(finalPts(bifIdx, 1), finalPts(bifIdx, 2), 'g*', 'LineWidth', 2);
@@ -110,6 +112,7 @@ function visualize_pipeline(img)
     % השוואה פשוטה לפי כמות הנקודות
     if size(finalPts,1) == size(pT,1)
         text(0.1,0.5,'✅ תואם','Color','g','FontSize',14);
+        text(0.1,0.3, sprintf('Points: %d', size(finalPts,1)), 'Color','k');
     else
         text(0.1,0.5,'❌ שגיאה','Color','r','FontSize',14);
         text(0.1,0.3, sprintf('Viz: %d, Main: %d', size(finalPts,1), size(pT,1)), 'Color','k');

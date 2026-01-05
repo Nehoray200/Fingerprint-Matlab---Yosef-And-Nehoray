@@ -1,12 +1,12 @@
-function cleanList = filter_minutiae(minutiaeList, roiMask)
-    % filter_minutiae - מסנן גם שוליים וגם כפילויות
+function cleanList = filter_minutiae(minutiaeList, roiMask, cfg)
+    % filter_minutiae - גרסה מתוקנת שמקבלת את cfg מבחוץ
     
     if isempty(minutiaeList)
         cleanList = [];
         return;
     end
     
-    cfg = get_config();
+    % cfg = get_config(); % <-- שורה זו מיותרת כעת כי קיבלנו את cfg כפרמטר
     
     % --- שלב 1: ניקוי שוליים (לפי מרחק אוקלידי) ---
     margin = cfg.filter.border_margin; 
@@ -30,7 +30,7 @@ function cleanList = filter_minutiae(minutiaeList, roiMask)
     keep_mask = pointDistances > margin;
     cleanList = minutiaeList(keep_mask, :);
     
-    % --- שלב 2: ניקוי כפילויות (זה מה שחסר לך!) ---
+    % --- שלב 2: ניקוי כפילויות ---
     if ~isempty(cleanList)
         % אנחנו נגדיר מרחק מינימלי קטן. כל מה שקרוב יותר מזה - יאוחד.
         minDistSq = cfg.filter.min_distance^2;

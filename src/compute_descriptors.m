@@ -1,14 +1,24 @@
-function descriptors = compute_descriptors(minutiae)
+function descriptors = compute_descriptors(minutiae, cfg)
     % compute_descriptors - יצירת מתאר (Descriptor) לכל נקודת מינושה
     % גרסה עצמאית (ללא צורך ב-Statistics Toolbox)
     
-    % קלט: minutiae - מטריצה N x 4 (x, y, type, theta)
-    % פלט: descriptors - מטריצה N x K (כאשר K הוא מספר השכנים שנבדקים)
+    % קלט: 
+    %   minutiae - מטריצה N x 4 (x, y, type, theta)
+    %   cfg      - מבנה ההגדרות (מכיל את feature.descriptor_k)
+    % פלט: 
+    %   descriptors - מטריצה N x K
+    
+    % בדיקת קלט (הגנה למקרה ששכחנו להגדיר בקונפיג)
+    if nargin < 2 || ~isfield(cfg.feature, 'descriptor_k')
+        kNeighbors = 5; % ברירת מחדל
+    else
+        kNeighbors = cfg.feature.descriptor_k;
+    end
     
     numMinutiae = size(minutiae, 1);
-    kNeighbors = 5; % מספר השכנים שישמרו בכל מתאר
     
     % אם אין מספיק נקודות, נחזיר מטריצה של אפסים
+    % (חייבים לפחות K+1 נקודות כי הנקודה עצמה לא נחשבת שכן של עצמה)
     if numMinutiae <= kNeighbors
         descriptors = zeros(numMinutiae, kNeighbors);
         return;
@@ -19,15 +29,13 @@ function descriptors = compute_descriptors(minutiae)
     y = minutiae(:, 2);
     
     % --- חישוב מטריצת מרחקים ידני (במקום pdist) ---
-    % חישוב ההפרש בין כל X לכל X, ובין כל Y לכל Y
-    % (משתמשים בטריק של מטריצות: וקטור עמודה פחות וקטור שורה יוצר מטריצה)
     dx = x - x.'; 
     dy = y - y.';
     
-    % מרחק אוקלידי (פיתגורס): שורש של (dx בריבוע ועוד dy בריבוע)
+    % מרחק אוקלידי
     distMatrix = sqrt(dx.^2 + dy.^2);
     
-    % --- המשך הקוד זהה לקודם ---
+    % --- יצירת המתארים ---
     descriptors = zeros(numMinutiae, kNeighbors);
     
     for i = 1:numMinutiae
@@ -37,7 +45,8 @@ function descriptors = compute_descriptors(minutiae)
         % מיון המרחקים מהקטן לגדול
         sortedDists = sort(dists, 'ascend');
         
-        % לוקחים את ה-K שכנים הקרובים (מתחילים מ-2 כי 1 הוא המרחק 0 לעצמה)
+        % לוקחים את ה-K שכנים הקרובים 
+        % (מתחילים מאינדקס 2, כי אינדקס 1 הוא המרחק 0 של הנקודה לעצמה)
         nearestDists = sortedDists(2 : kNeighbors + 1);
         
         % שמירה
