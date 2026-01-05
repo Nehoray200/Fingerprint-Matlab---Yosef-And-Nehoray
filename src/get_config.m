@@ -1,46 +1,61 @@
 function cfg = get_config()
-    % get_config - קובץ הגדרות מרכזי (מעודכן ומותאם מלא)
+    % get_config - קובץ הגדרות מרכזי (הגדרות מומלצות ל-500 DPI)
     
     %% 1. הגדרות מערכת וקבצים
     cfg.db_filename = 'fingerprint_database.mat';
     
     %% 2. הגדרות עיבוד מקדים (Preprocessing)
-    % אלו היו "קשיחים" בתוך process_fingerprint, עדיף לרכז כאן
-    cfg.preprocess.gauss_sigma = 0.8;       % עוצמת ההחלקה
-    cfg.preprocess.bin_sensitivity = 0.65;  % רגישות הבינאריזציה האדפטיבית
+    % אם משתמשים בגרסת Ultra-Lite, חלק מאלו לא בשימוש, אך טוב שיהיו מוגדרים.
+    cfg.preprocess.gauss_sigma = 0.8;       
+    cfg.preprocess.bin_sensitivity = 0.65;  
     
-    cfg.feature.descriptor_k = 5;   % מספר השכנים למתאר (Descriptor)
-
+    % מספר השכנים למתאר. 5 זה איזון טוב בין דיוק למהירות.
+    cfg.feature.descriptor_k = 5;   
+    
     %% 3. הגדרות מסיכה (ROI)
-    cfg.roi.erosion_size = 0;   % משאירים 0 כדי לא לאבד מידע בקצוות
-    cfg.roi.closing_size = 20;  % סגירה חזקה למניעת חורים באצבע
+    cfg.roi.erosion_size = 0;   % 0 זה מצוין כדי לא לאבד מידע בקצוות
+    cfg.roi.closing_size = 20;  % סוגר חורים בתוך האצבע, ערך טוב.
     
     %% 4. חילוץ מאפיינים (Feature Extraction)
-    % כמה צעדים ללכת לאורך הרכס כדי לחשב זווית?
-    cfg.feature.angle_steps = 3; 
+    % שינוי מומלץ: הגדלה מ-3 ל-5. 
+    % הליכה של 3 פיקסלים היא קצרה מדי ורגישה לרעשים. 5 נותן זווית אמינה יותר.
+    cfg.feature.angle_steps = 5; 
     
-    %% 5. הגדרות סינון (Filtering)
-    cfg.filter.border_margin = 25; % מרחק מהקצה (מסיכה)
-    cfg.filter.min_distance = 15;   % מרחק מינימלי למניעת כפילויות
+    %% 5. הגדרות סינון (Filtering) - קריטי לניקיון
+    
+    cfg.filter.border_margin = 20; % מצוין. מנקה את "המסגרת" הבעייתית.
+    cfg.filter.min_distance = 10;  % מומלץ: כרוחב רכס ממוצע. מונע שתי נקודות על אותו רכס.
+    
+    % === הגדרות סינון גיאומטרי (טיפול ברעשים) ===
+    % הערכים הקודמים (1) היו נמוכים מדי ולא סיננו כלום.
+    
+    % 1. הסרת "רכסים קצרים" (איים):
+    % אם קו מתחיל ונגמר תוך פחות מ-15 פיקסלים (כ-1.5 רוחב רכס) -> למחוק.
+    cfg.filter.max_short_ridge_dist = 25; 
+    
+    % 2. הסרת "גשרים" (חיבורים שקריים בין רכסים):
+    % אם שני פיצולים קרובים מדי (פחות מ-15 פיקסלים) -> למחוק.
+    cfg.filter.max_bridge_dist = 15; 
+    
+    % 3. הסרת "קוצים" (Spikes - זיזים קטנים):
+    % אם קו מתפצל ומיד נגמר (תוך 15 פיקסלים) -> למחוק.
+    cfg.filter.max_spike_dist = 15;
+    
+    % סובלנות זווית לזיהוי שברים (35 מעלות זה סביר).
+    cfg.filter.angle_tolerance = deg2rad(35);
     
     %% 6. הגדרות התאמה (Matching & Search)
-    cfg.match.pass_threshold = 12.0;    % הציון המינימלי לזיהוי חיובי
-    cfg.match.candidate_count = 50;     % כמה מועמדים לבדוק (הורדתי מ-80 לשיפור מהירות)
+    cfg.match.pass_threshold = 12.0;    % המלצה: להעלות טיפה ל-15 כדי להפחית זיהויים שגויים (FAR).
+    cfg.match.candidate_count = 50;     % 50 זה מצוין לביצועים.
     
-    % ספי החלטה בינאריים (האם להחשיב נקודה כתואמת?)
-    cfg.match.max_dist = 15;            % מרחק בפיקסלים (כ-3% מהתמונה)
-    
-    % שינוי קריטי: 45 מעלות זה המון! הורדתי ל-30 כדי לדייק.
-    cfg.match.max_ang_deg = 45;         
+    % ספי החלטה:
+    cfg.match.max_dist = 15;            % 15 פיקסלים סובלנות למרחק (אלסטיות העור).
+    cfg.match.max_ang_deg = 45;         % 45 מעלות סובלנות לסיבוב (הנחה נוחה).
     cfg.match.max_ang_rad = deg2rad(cfg.match.max_ang_deg);
     
     %% 7. הגדרות ניקוד (Scoring Functions)
-    % פרמטרים לפונקציות הגאוס (כמה מהר הציון יורד כשיש אי-התאמה)
-    
-    cfg.score.sigma_dist = 10;     % החמרה קלה בדיוק המיקום
-    
-    % >>> חסר לך הפרמטר הזה בקובץ המקורי! <<<
-    % נדרש עבור calculate_score לחישוב איכות הזווית
-    cfg.score.sigma_ang_rad = 0.5; % שווה בערך ל-28 מעלות
-    cfg.score.sigma_desc = 45;     % משקל המתארים (Descriptors)
+    % פרמטרים לפונקציות גאוס (כמה מהר הציון יורד)
+    cfg.score.sigma_dist = 10;     
+    cfg.score.sigma_ang_rad = 0.5; 
+    cfg.score.sigma_desc = 45;     
 end

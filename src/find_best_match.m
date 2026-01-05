@@ -1,5 +1,5 @@
 function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData, inputData, manualThreshold)
-    % find_best_match - גרסה מנורמלת ונקייה
+    % find_best_match - משווה בין שתי תבניות ומחזירה ציון התאמה
     
     T_pts = templateData.minutiae;
     T_desc = templateData.descriptors;
@@ -15,8 +15,6 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
         finalScore = 0; bestAlignedInput=[]; isMatch=false; return;
     end
     
-    % --- שורה שנמחקה: distThrSq = cfg.match.max_dist^2; ---
-    
     angThr = cfg.match.max_ang_rad;
     sigmaDist = cfg.score.sigma_dist;
     sigmaDesc = cfg.score.sigma_desc;
@@ -24,7 +22,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
     % --- שלב 1: מציאת מועמדים ---
     NI = size(I_pts, 1); NT = size(T_pts, 1);
     
-    % מטריצת מרחקים
+    % מטריצת מרחקים בין דסקריפטורים
     diffMat = zeros(NI, NT);
     for i = 1:NI
         d = I_desc(i,:) - T_desc; 
@@ -43,7 +41,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
         i = candidateI(k);
         j = candidateJ(k);
         
-        % יישור
+        % יישור (Alignment) לפי ההפרש הזוויתי והמיקום של הזוג הנבחר
         dTheta = T_pts(j,4) - I_pts(i,4);
         c = cos(dTheta); s = sin(dTheta);
         rotMat = [c -s; s c];
@@ -54,7 +52,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
         
         alignedAng = mod(I_pts(:,4) + dTheta + pi, 2*pi) - pi;
         
-        % חישוב שכנים
+        % מציאת השכן הקרוב ביותר לכל נקודה
         dists = zeros(NI, 1);
         idx = zeros(NI, 1);
         RefCoords = T_pts(:, 1:2);
@@ -67,6 +65,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
             idx(q) = minIdx;
         end
         
+        % סינון נקודות שרחוקות מדי
         valid = dists < cfg.match.max_dist;
         
         % דורשים לפחות 3 נקודות תואמות כדי לחשב ציון
@@ -74,21 +73,39 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
             matchedIdxInput = find(valid);
             matchedIdxDb = idx(valid);
             
+            % בדיקת זווית וסוג לכל זוג
             angDiffs = abs(mod(alignedAng(matchedIdxInput) - T_pts(matchedIdxDb,4) + pi, 2*pi) - pi);
             typeMatch = (I_pts(matchedIdxInput,3) == T_pts(matchedIdxDb,3));
             
             goodMatches = (angDiffs < angThr) & typeMatch;
             
-            if sum(goodMatches) > 0
-                geomScore = sum(exp(-dists(valid).^2 / (2*sigmaDist^2)));
+            numGoodMatches = sum(goodMatches);
+            
+            if numGoodMatches > 0
+                % חישוב ציונים חלקיים (גאוס)
+                geomScore = sum(exp(-dists(valid(goodMatches)).^2 / (2*sigmaDist^2)));
                 
                 linIdx = sub2ind([NI, NT], matchedIdxInput(goodMatches), matchedIdxDb(goodMatches));
                 descVals = diffMat(linIdx);
                 descScore = sum(exp(-descVals.^2 / (2*sigmaDesc^2)));
                 
-                % --- התיקון: שינוי מ-1000 ל-100 ---
-                % זה מנרמל את הציון לטווח שפוי יותר
-                currentScore = (geomScore * descScore) / (NI * NT) * 100;
+                % === השינוי: נרמול חכם ===
+                % במקום לחלק במכפלה (NI*NT), אנו מנרמלים לפי כמות הנקודות בפועל.
+                % הנוסחה הזו נותנת משקל לכמות ההתאמות ולטיב שלהן.
+                
+                % ממוצע האיכות (0-1) של ההתאמות שנמצאו
+                avgQuality = (geomScore + descScore) / (2 * numGoodMatches);
+                
+                % הציון הוא שילוב של איכות וכמות.
+                % כמות: כמה נקודות תאמו מתוך המקסימום האפשרי (הקטן מבין השניים)
+                matchRatio = numGoodMatches / min(NI, NT); 
+                
+                % ציון סופי (פקטור 100 כדי שיהיה קריא)
+                % אנו מעלים בריבוע כדי להעניש התאמות חלשות
+                currentScore = (avgQuality * matchRatio^2) * 100 * (numGoodMatches / 5); 
+                
+                % הסבר לתיקון האחרון (numGoodMatches/5): 
+                % זה בונוס ליניארי לכמות. אם יש הרבה נקודות, הציון יעלה משמעותית.
                 
                 if currentScore > bestScore
                     bestScore = currentScore;
