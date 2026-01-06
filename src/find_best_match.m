@@ -1,5 +1,5 @@
 function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData, inputData, manualThreshold)
-    % find_best_match - משווה בין שתי תבניות ומחזירה ציון התאמה
+    % find_best_match - השוואה גיאומטרית וחישוב ציון התאמה משוקלל
     
     T_pts = templateData.minutiae;
     T_desc = templateData.descriptors;
@@ -10,7 +10,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
     scoreThreshold = cfg.match.pass_threshold;
     if nargin >= 3 && manualThreshold > 0, scoreThreshold = manualThreshold; end
     
-    % בדיקת שפיות
+    % בדיקת שפיות: אם אין מספיק נקודות, אין טעם להשוות
     if size(T_pts,1) < 5 || size(I_pts,1) < 5
         finalScore = 0; bestAlignedInput=[]; isMatch=false; return;
     end
@@ -19,16 +19,17 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
     sigmaDist = cfg.score.sigma_dist;
     sigmaDesc = cfg.score.sigma_desc;
     
-    % --- שלב 1: מציאת מועמדים ---
+    % --- שלב 1: מציאת מועמדים ליישור (Alignment Candidates) ---
     NI = size(I_pts, 1); NT = size(T_pts, 1);
     
-    % מטריצת מרחקים בין דסקריפטורים
+    % חישוב מרחק בין הדסקריפטורים של כל הנקודות
     diffMat = zeros(NI, NT);
     for i = 1:NI
         d = I_desc(i,:) - T_desc; 
         diffMat(i,:) = sqrt(sum(d.^2, 2));
     end
     
+    % בחירת הזוגות הסבירים ביותר להתחלת היישור
     numCandidates = min(cfg.match.candidate_count, NI * NT);
     [~, sortIdx] = sort(diffMat(:), 'ascend');
     [candidateI, candidateJ] = ind2sub([NI, NT], sortIdx(1:numCandidates));
@@ -36,23 +37,25 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
     bestScore = 0;
     bestAlignedInput = [];
     
-    % --- שלב 2: לולאת יישור ---
+    % --- שלב 2: לולאת יישור ובדיקה ---
     for k = 1:numCandidates
         i = candidateI(k);
         j = candidateJ(k);
         
-        % יישור (Alignment) לפי ההפרש הזוויתי והמיקום של הזוג הנבחר
+        % חישוב פרמטרי היישור (הזזה וסיבוב) לפי הזוג הנוכחי
         dTheta = T_pts(j,4) - I_pts(i,4);
         c = cos(dTheta); s = sin(dTheta);
         rotMat = [c -s; s c];
         
+        % ביצוע היישור על כל נקודות הקלט
         centeredI = I_pts(:,1:2) - I_pts(i,1:2);
         rotatedI = centeredI * rotMat';
         alignedI = rotatedI + T_pts(j,1:2);
         
+        % יישור הזוויות
         alignedAng = mod(I_pts(:,4) + dTheta + pi, 2*pi) - pi;
         
-        % מציאת השכן הקרוב ביותר לכל נקודה
+        % מציאת השכן הקרוב ביותר במאגר לכל נקודה מיושרת
         dists = zeros(NI, 1);
         idx = zeros(NI, 1);
         RefCoords = T_pts(:, 1:2);
@@ -65,47 +68,42 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
             idx(q) = minIdx;
         end
         
-        % סינון נקודות שרחוקות מדי
+        % סינון ראשוני לפי מרחק מקסימלי מותר
         valid = dists < cfg.match.max_dist;
         
-        % דורשים לפחות 3 נקודות תואמות כדי לחשב ציון
+        % דורשים מינימום 3 נקודות תואמות כדי להתייחס לתוצאה ברצינות
         if sum(valid) >= 3
             matchedIdxInput = find(valid);
             matchedIdxDb = idx(valid);
             
-            % בדיקת זווית וסוג לכל זוג
+            % בדיקה שנייה: התאמת זווית וסוג מינושיה
             angDiffs = abs(mod(alignedAng(matchedIdxInput) - T_pts(matchedIdxDb,4) + pi, 2*pi) - pi);
             typeMatch = (I_pts(matchedIdxInput,3) == T_pts(matchedIdxDb,3));
             
             goodMatches = (angDiffs < angThr) & typeMatch;
-            
             numGoodMatches = sum(goodMatches);
             
-            if numGoodMatches > 0
-                % חישוב ציונים חלקיים (גאוס)
+            if numGoodMatches >= 3
+                % --- חישוב הציון המשופר ---
+                
+                % 1. חישוב איכות גיאומטרית (לפי מרחק)
                 geomScore = sum(exp(-dists(valid(goodMatches)).^2 / (2*sigmaDist^2)));
                 
+                % 2. חישוב איכות דסקריפטורים (לפי דמיון סביבתי)
                 linIdx = sub2ind([NI, NT], matchedIdxInput(goodMatches), matchedIdxDb(goodMatches));
                 descVals = diffMat(linIdx);
                 descScore = sum(exp(-descVals.^2 / (2*sigmaDesc^2)));
                 
-                % === השינוי: נרמול חכם ===
-                % במקום לחלק במכפלה (NI*NT), אנו מנרמלים לפי כמות הנקודות בפועל.
-                % הנוסחה הזו נותנת משקל לכמות ההתאמות ולטיב שלהן.
-                
-                % ממוצע האיכות (0-1) של ההתאמות שנמצאו
+                % 3. שקלול סופי:
+                % avgQuality: כמה המבנה תואם (0 עד 1)
                 avgQuality = (geomScore + descScore) / (2 * numGoodMatches);
                 
-                % הציון הוא שילוב של איכות וכמות.
-                % כמות: כמה נקודות תאמו מתוך המקסימום האפשרי (הקטן מבין השניים)
-                matchRatio = numGoodMatches / min(NI, NT); 
+                % matchRatio: כמה אחוז מהאצבע הצלחנו להתאים
+                matchRatio = numGoodMatches / min(NI, NT);
                 
-                % ציון סופי (פקטור 100 כדי שיהיה קריא)
-                % אנו מעלים בריבוע כדי להעניש התאמות חלשות
-                currentScore = (avgQuality * matchRatio^2) * 100 * (numGoodMatches / 5); 
-                
-                % הסבר לתיקון האחרון (numGoodMatches/5): 
-                % זה בונוס ליניארי לכמות. אם יש הרבה נקודות, הציון יעלה משמעותית.
+                % הנוסחה הסופית: מענישה אי-התאמות ומתגמלת כמות גבוהה של נקודות
+                % הפקטור (numGoodMatches/5) מעלה את הציון ככל שיש יותר הוכחות
+                currentScore = (avgQuality * matchRatio^2) * 100 * (numGoodMatches / 5);
                 
                 if currentScore > bestScore
                     bestScore = currentScore;
