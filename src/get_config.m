@@ -3,6 +3,24 @@ function cfg = get_config()
     
     %% 1. הגדרות מערכת וקבצים
     cfg.db_filename = 'fingerprint_database.mat';
+
+    %% 2. הגדרות Gabor (החדשות)
+    % פרמטרים לשיפור התמונה בשיטת הונג (Hong et al.)
+    cfg.gabor.blk_sze = 16;       % גודל בלוק לסגמנטציה
+    cfg.gabor.thresh = 0.1;       % סף שונות להפרדת רקע
+    cfg.gabor.grad_sigma = 1;     % סיגמא לחישוב נגזרות כיוון
+    cfg.gabor.block_sigma = 7;    % סיגמא להחלקת כיוונים
+    cfg.gabor.smooth_sigma = 7;   % החלקה סופית של שדה הכיוונים
+    cfg.gabor.freq_blk = 38;      % גודל בלוק לחישוב תדר
+    cfg.gabor.freq_wind = 5;      % חלון חישוב תדר
+    cfg.gabor.min_wl = 5;         % אורך גל מינימלי
+    cfg.gabor.max_wl = 15;        % אורך גל מקסימלי
+    cfg.gabor.kx = 0.65;          % חוזק הסינון בציר X
+    cfg.gabor.ky = 0.65;          % חוזק הסינון בציר Y
+    
+    %% 3. הגדרות עיבוד המשך (בינאריזציה ושלד)
+    cfg.binarize.sens = 0.5;      % סף לבינאריזציה (או adaptive)
+
     
     %% 2. הגדרות עיבוד מקדים (Preprocessing)
     % אם משתמשים בגרסת Ultra-Lite, חלק מאלו לא בשימוש, אך טוב שיהיו מוגדרים.
