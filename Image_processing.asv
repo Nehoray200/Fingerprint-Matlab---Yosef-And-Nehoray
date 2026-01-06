@@ -1,0 +1,64 @@
+%% פרויקט עיבוד טביעת אצבע - חלק ראשון: Pre-processing
+
+clear; clc; close all;
+
+% --- שלב 0: טעינת התמונה ---
+% טעינת התמונה מהנתיב שציינת
+img = imread('data/DB1_B/101_1.tif');
+
+if size(img, 3) == 3, img = rgb2gray(img); end
+
+% --- שלב 1: נרמול (Normalization) ---
+% הפיכה ל-double ונרמול עוצמות האפור
+img = im2double(img);
+img_norm = (img - mean(img(:))) / std(img(:));
+
+% --- שלב 2: הערכת כיווניות (Orientation Estimation) ---
+% חישוב הכיוון של כל רכס כדי שהפילטר ידע לאן "לזרום" ולחבר
+[Gmag, Gdir] = imgradientxy(img_norm);
+theta = atan2(-Gmag, Gdir); % זווית הרכסים ברדיאנים
+
+% --- שלב 3: סינון גאבור אדפטיבי (חיבור הרכסים) ---
+% יצירת בנק של פילטרים ב-8 כיוונים שונים
+num_orientations = 8;
+orient_list = linspace(0, 180, num_orientations);
+wavelength = 8; % מרחק ממוצע בפיקסלים בין רכסים (מתאים לתמונה שלך)
+enhanced_img = zeros(size(img_norm));
+
+for i = 1:num_orientations
+    % הפעלת פילטר גאבור בכיוון ספציפי
+    % הפילטר מחבר קווים שבורים שנמצאים בכיוון שלו
+    g_filt = imgaborfilt(img_norm, wavelength, orient_list(i));
+    
+    % בחירת האזורים בתמונה שהכיווניות שלהם מתאימה לפילטר הנוכחי
+    mask = abs(theta - deg2rad(orient_list(i))) < (pi/num_orientations);
+    enhanced_img(mask) = g_filt(mask);
+end
+
+% --- שלב 4: בינאריזציה על התמונה המשופרת ---
+% לאחר הגאבור, הרכסים חזקים ומחוברים. כעת נהפוך אותם לשחור-לבן.
+bw = imbinarize(enhanced_img, 'adaptive', 'Sensitivity', 0.5);
+bw = ~bw; % היפוך: רכסים בלבן
+bw = bwareaopen(bw, 50); % הסרת רעשים קטנים מאוד
+
+% --- שלב 5: דילול (Thinning / Skeletonization) ---
+% הדילול מתבצע כעת על רכסים רציפים ומחוברים
+skeleton = bwskel(bw);
+
+% ניקוי "קוצים" (Spurs) - ענפים קטנים שנוצרים בטעות בדילול
+skeleton_final = bwmorph(skeleton, 'spur', 15);
+
+% --- שלב 6: הצגת תוצאות ---
+figure('Name', 'Fingerprint Enhancement & Skeletonization');
+
+subplot(1,3,1); imshow(img, []); 
+title('1. תמונה מקורית');
+
+subplot(1,3,2); imshow(bw); 
+title('2. לאחר גאבור (מחובר)');
+
+subplot(1,3,3); imshow(skeleton_final); 
+title('3. דילול סופי (פיקסל 1)');
+
+% הודעה למשתמש
+fprintf('העיבוד הסתיים. השתמשנו במסנני גאבור כדי לחבר את הרכסים.\n');
