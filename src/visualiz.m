@@ -3,7 +3,7 @@ clc; clear;
 
 %% === הגדרות משתמש ===
 % שנה ל-true כדי לעבוד מהר עם קובץ קבוע, או false כדי לבחור כל פעם
-USE_FIXED_FILE = true; 
+USE_FIXED_FILE = false; 
 
 % שם הקובץ הקבוע (חייב להיות בתוך תיקיית data, או נתיב מלא)
 FIXED_FILENAME = '102_1_skeleton.png'; 
