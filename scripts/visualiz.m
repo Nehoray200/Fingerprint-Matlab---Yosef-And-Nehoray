@@ -11,10 +11,10 @@ end
 % --------------------------------------------------
 
 %% === הגדרות משתמש ===
-USE_FIXED_FILE = false; 
+USE_FIXED_FILE = true; 
 
 % הגדר כאן רק את שם הקובץ
-FIXED_FILENAME = '103_3.tif'; 
+FIXED_FILENAME = '103_5.tif'; 
 
 % הגדר כאן את הנתיב לתיקייה
 FIXED_FOLDER = 'C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\data\DB1_B';

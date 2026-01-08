@@ -4,7 +4,7 @@ addpath('functions'); % וודא שתיקיית הפונקציות זמינה
 
 %% שלב 1: טעינת התמונה
 % וודא שהנתיב תואם לקובץ שלך
-filename = 'data/DB1_B/101_1.tif'; 
+filename = 'data/DB1_B/103_5.tif'; 
 img = imread(filename);
 
 if size(img,3) == 3
@@ -19,7 +19,7 @@ img = (img - min(img(:))) / (max(img(:)) - min(img(:)));
 
 % 1. סגמנטציה - הפרדת האצבע מהרקע
 % תיקון: העלאת הסף ל-0.2 מנקה את רעשי הרקע (הבלוקים)
-[normim, mask, maskind] = ridgesegment(img, 16, 0.2);
+[normim, mask, maskind] = ridgesegment(img, 1, 0.2);
 
 % 2. חישוב כיווניות (Orientation)
 orientim = ridgeorient(normim, 1, 5, 5);

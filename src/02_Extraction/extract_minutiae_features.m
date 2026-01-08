@@ -1,6 +1,6 @@
 function minutiaeData = extract_minutiae_features(skeletonImage, cfg)
-    % extract_minutiae_features - גרסה סופית ומתוקנת (עם Preallocation)
-    % כוללת טיפול באלכסונים וחישוב זווית אמין
+    % extract_minutiae_features - גרסה מואצת (Optimized)
+    % משתמשת בפונקציות C++ מובנות של MATLAB לזיהוי מהיר של נקודות
     
     %% 1. נרמול ושיפור השלד
     skeletonImage = logical(skeletonImage);
@@ -10,64 +10,49 @@ function minutiaeData = extract_minutiae_features(skeletonImage, cfg)
         skeletonImage = ~skeletonImage;
     end
     
-    % תיקון קריטי: שימוש ב-thin במקום clean
+    % ניקוי ודיקוק (כמו במקור)
     skeletonImage = bwmorph(skeletonImage, 'thin', Inf);
+    skeletonImage = bwmorph(skeletonImage, 'clean'); % מסיר פיקסלים בודדים
+    skeletonImage = bwmorph(skeletonImage, 'spur', 5); % מסיר קווים קצרצרים (זיזים)
     
-    % ניקוי רעשים נוסף
-    skeletonImage = bwmorph(skeletonImage, 'spur');
+    %% 2. זיהוי טופולוגי מהיר (במקום Crossing Number ידני)
+    % הפונקציה bwmorph רצה ב-C++ ומבצעת את חישוב ה-CN לכל התמונה בבת אחת
     
-    %% 2. הכנה ללולאה (Preallocation - תיקון האזהרה)
-    [H, W] = size(skeletonImage);
+    % מציאת סיומות (End points)
+    bw_endings = bwmorph(skeletonImage, 'endpoints');
+    [r_end, c_end] = find(bw_endings);
     
-    % מוצאים את כל הפיקסלים הדלוקים
-    [rows, cols] = find(skeletonImage);
-    numPixels = length(rows);
+    % מציאת פיצולים (Branch points)
+    bw_branches = bwmorph(skeletonImage, 'branchpoints');
+    [r_bif, c_bif] = find(bw_branches);
     
-    % === התיקון: הקצאת זיכרון מראש ===
-    % במקרה הגרוע ביותר, כל פיקסל הוא נקודת עניין (לא באמת יקרה),
-    % אז נקצה מערך בגודל המקסימלי האפשרי ונמלא אותו.
-    minutiaeData = zeros(numPixels, 4); 
-    count = 0; % מונה למספר הנקודות שמצאנו בפועל
+    %% 3. איחוד המידע וחישוב זוויות
+    numEnd = length(r_end);
+    numBif = length(r_bif);
     
-    %% 3. אימות וסיווג (הלולאה הראשית)
-    for k = 1:numPixels
-        r = rows(k);
-        c = cols(k);
-        
-        % דילוג על שוליים
-        if r < 2 || c < 2 || r > H-1 || c > W-1
-            continue;
-        end
-        
-        % שליפת 8 השכנים במעגל (עם כיוון השעון)
-        blk = skeletonImage(r-1:r+1, c-1:c+1);
-        neighbors_circle = [blk(1,2), blk(1,3), blk(2,3), blk(3,3), ...
-                            blk(3,2), blk(3,1), blk(2,1), blk(1,1), blk(1,2)];
-                     
-        % חישוב Crossing Number (CN)
-        transitions = sum(abs(diff(double(neighbors_circle))));
-        cn = transitions / 2;
-        
-        if cn == 1
-            % === נקודת סיום (Ending) ===
-            angle = calculate_orientation_reliable(skeletonImage, r, c, cfg);
-            count = count + 1;
-            minutiaeData(count, :) = [c, r, 1, angle];
-            
-        elseif cn == 3
-            % === נקודת פיצול (Bifurcation) ===
-            angle = calculate_orientation_reliable(skeletonImage, r, c, cfg);
-            count = count + 1;
-            minutiaeData(count, :) = [c, r, 3, angle];
-        end
+    % הקצאה מראש מדויקת (אין צורך בניחוש גודל)
+    minutiaeData = zeros(numEnd + numBif, 4);
+    
+    % --- עיבוד סיומות (Type = 1) ---
+    for i = 1:numEnd
+        % חישוב זווית רק לנקודות שנמצאו
+        angle = calculate_orientation_reliable(skeletonImage, r_end(i), c_end(i), cfg);
+        minutiaeData(i, :) = [c_end(i), r_end(i), 1, angle];
     end
     
-    % === חיתוך סופי ===
-    % זורקים את השורות המיותרות (האפסים) שנשארו בסוף המערך
-    minutiaeData = minutiaeData(1:count, :);
+    % --- עיבוד פיצולים (Type = 3) ---
+    for i = 1:numBif
+        angle = calculate_orientation_reliable(skeletonImage, r_bif(i), c_bif(i), cfg);
+        
+        % הערה: המיקום של branchpoints ב-bwmorph הוא לפעמים פיקסל אחד ליד
+        % הצומת האמיתי, אבל זה זניח לרוב השימושים.
+        minutiaeData(numEnd + i, :) = [c_bif(i), r_bif(i), 3, angle];
+    end
+    
+    % (אין צורך ב"חיתוך סופי" כי גודל המערך ידוע מראש ומדויק)
 end
 
-%% פונקציית עזר לחישוב זווית (ללא שינוי)
+%% פונקציית עזר לחישוב זווית (ללא שינוי, כפי שביקשת)
 function angle = calculate_orientation_reliable(img, r, c, cfg)
     % קבלת מספר הצעדים מהקונפיגורציה
     steps = cfg.feature.angle_steps;

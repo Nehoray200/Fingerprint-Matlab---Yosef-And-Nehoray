@@ -1,6 +1,307 @@
 % ========================================================================
-% FILENAME: Image_processing.m
+% FILENAME: main_system.m
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab
+% ========================================================================
+
+%% ========================================================================
+%% מערכת ביומטרית לזיהוי טביעת אצבע - main_system.m
+%% ========================================================================
+clc; clear; close all;
+
+% --- 1. הגדרת נתיבים ---
+addpath(genpath('src'));
+addpath('data');         
+
+% --- 2. הגדרות מערכת ---
+cfg = get_config();
+dbFileName = cfg.db_filename; 
+PASS_THRESHOLD = cfg.match.pass_threshold;
+minPointsEnroll = cfg.enroll.min_minutiae; 
+
+% --- 3. ניהול זיכרון (Optimization) ---
+% נחזיק את המאגר בזיכרון במקום לטעון אותו כל פעם מחדש
+fingerprintDB = []; 
+db_needs_reload = true; % דגל שמסמן אם צריך לטעון את המאגר מחדש
+
+while true
+    %% טעינת מאגר חכמה (רק אם צריך)
+    if db_needs_reload && isfile(dbFileName)
+        try
+            loadedData = load(dbFileName, 'fingerprintDB');
+            if isfield(loadedData, 'fingerprintDB')
+                fingerprintDB = loadedData.fingerprintDB;
+            else
+                fingerprintDB = [];
+            end
+            db_needs_reload = false; % המאגר מעודכן, מכבים את הדגל
+            disp('>> המאגר נטען/עודכן בהצלחה לזיכרון.');
+        catch
+            warning('שגיאה בטעינת קובץ המאגר.');
+            fingerprintDB = [];
+        end
+    elseif ~isfile(dbFileName)
+        fingerprintDB = [];
+    end
+
+    %% תפריט ראשי
+    choice = menu('מערכת ביומטרית - תפריט ראשי', ...
+                  '1. רישום משתמש בודד (Single Enrollment)', ...
+                  '2. זיהוי משתמש בודד (Single Identification)', ...
+                  '3. רישום המוני (Batch Enrollment)', ...
+                  '4. זיהוי המוני + סטטיסטיקה (Batch Identification)', ...
+                  '5. הצגת המאגר', ...
+                  '6. יציאה');
+              
+    if choice == 6 || choice == 0
+        disp('יציאה מהמערכת.');
+        break;
+    end
+    
+    %% משתנים לשימוש
+    currentData = []; 
+    currentImg = [];
+    fullPath = '';
+    
+    %% --- טיפול במקרים 1 ו-2 (קבצים בודדים) ---
+    if choice == 1 || choice == 2
+        [file, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Fingerprint Files'}, ...
+                                 'בחר תמונת טביעת אצבע', 'data/');
+        
+        if isequal(file, 0), continue; end 
+        
+        fullPath = fullfile(path, file);
+        try
+            currentImg = imread(fullPath);
+            disp('>> מעבד תמונה...');
+            % שימוש בפונקציה המאוחדת החדשה
+            [template, ~, ~, descriptors] = process_fingerprint(currentImg); 
+            
+            if size(template, 1) < minPointsEnroll
+                msgbox(sprintf('איכות נמוכה: %d נקודות (דרוש %d).', size(template, 1), minPointsEnroll), 'שגיאה', 'error');
+                continue;
+            end
+            
+            currentData.minutiae = template;
+            currentData.descriptors = descriptors;
+            
+        catch err
+            errordlg(['שגיאה בעיבוד הקובץ: ' err.message]);
+            continue;
+        end
+    end
+    
+    %% --- לוגיקה לפי בחירה ---
+    switch choice
+        
+        % === 1. רישום בודד ===
+        case 1
+            name = inputdlg('הכנס שם משתמש:', 'רישום');
+            if ~isempty(name) && ~isempty(name{1})
+                add_user_to_db(dbFileName, name{1}, currentData, fullPath);
+                
+                % עדכון הדגל: ביצענו שינוי בדיסק, צריך לטעון מחדש בסיבוב הבא
+                db_needs_reload = true; 
+            end
+            
+        % === 2. זיהוי בודד ===
+        case 2
+            if isempty(fingerprintDB)
+                msgbox('המאגר ריק או לא נטען.', 'שגיאה', 'error'); continue;
+            end
+            % כאן לא עושים load, משתמשים ב-fingerprintDB מהזיכרון
+            
+            bestScore = 0;
+            bestName = 'לא ידוע';
+            bestAlignedPoints = [];
+            bestDbTemplate = [];
+            
+            wb = waitbar(0, 'סורק מאגר...');
+            for i = 1:length(fingerprintDB)
+                waitbar(i/length(fingerprintDB), wb);
+                
+                dbData.minutiae = fingerprintDB(i).template;
+                if isfield(fingerprintDB(i), 'descriptors')
+                    dbData.descriptors = fingerprintDB(i).descriptors;
+                else, dbData.descriptors = []; end
+                
+                [score, alignedData, ~] = find_best_match(dbData, currentData, 0);
+                
+                if score > bestScore
+                    bestScore = score;
+                    bestName = fingerprintDB(i).name;
+                    bestAlignedPoints = alignedData;
+                    bestDbTemplate = fingerprintDB(i).template;
+                end
+            end
+            close(wb);
+            
+            if bestScore >= PASS_THRESHOLD
+                msgbox(['זוהה: ' bestName ' (ציון: ' num2str(bestScore) ')'], 'הצלחה');
+                visualize_match_result(currentImg, bestDbTemplate, bestAlignedPoints, bestName, bestScore);
+            else
+                msgbox(['לא נמצאה התאמה. ציון הכי גבוה: ' num2str(bestScore)], 'כישלון', 'error');
+            end
+            
+        % === 3. רישום המוני ===
+        case 3
+            [files, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Fingerprint Files'}, ...
+                                      'בחר תמונות לרישום', 'data/', 'MultiSelect', 'on');
+            if isequal(files, 0), continue; end
+            if ischar(files), files = {files}; end
+            
+            wb = waitbar(0, 'מבצע רישום המוני...');
+            successCount = 0;
+            for k = 1:length(files)
+                waitbar(k/length(files), wb, sprintf('רושם: %s...', files{k}));
+                fullPath = fullfile(path, files{k});
+                try
+                    img = imread(fullPath);
+                    [template, ~, ~, descriptors] = process_fingerprint(img);
+                    
+                    if size(template, 1) >= minPointsEnroll
+                        [~, nameByUser, ~] = fileparts(files{k});
+                        tempData.minutiae = template;
+                        tempData.descriptors = descriptors;
+                        add_user_to_db(dbFileName, nameByUser, tempData, fullPath);
+                        successCount = successCount + 1;
+                    end
+                catch, end
+            end
+            close(wb);
+            msgbox(['נוספו ' num2str(successCount) ' משתמשים.'], 'סיום');
+            
+            % עדכון הדגל: המאגר בדיסק השתנה
+            db_needs_reload = true;
+
+        % === 4. זיהוי המוני + חישוב אחוזי הצלחה ===
+        case 4
+            if isempty(fingerprintDB)
+                msgbox('המאגר ריק או לא נטען.', 'שגיאה', 'error'); continue;
+            end
+            % כאן לא עושים load, חוסכים זמן רב!
+            
+            [files, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Fingerprint Files'}, ...
+                                      'בחר תמונות לבדיקה', 'data/', 'MultiSelect', 'on');
+            if isequal(files, 0), continue; end
+            if ischar(files), files = {files}; end
+            
+            results = {}; 
+            wb = waitbar(0, 'מבצע זיהוי המוני...');
+            
+            correctCount = 0;
+            validCount = 0; 
+            
+            for k = 1:length(files)
+                waitbar(k/length(files), wb, sprintf('בודק: %s...', files{k}));
+                thisFile = files{k};
+                fullPath = fullfile(path, thisFile);
+                
+                % --- חילוץ "הזהות האמיתית" משם הקובץ ---
+                [~, fNameNoExt, ~] = fileparts(thisFile);
+                parts = strsplit(fNameNoExt, '_');
+                realID = parts{1}; 
+                
+                try
+                    img = imread(fullPath);
+                    [template, ~, ~, descriptors] = process_fingerprint(img);
+                    
+                    if size(template, 1) < minPointsEnroll
+                        results{end+1, 1} = thisFile;
+                        results{end, 2} = realID;
+                        results{end, 3} = '---';
+                        results{end, 4} = 0;
+                        results{end, 5} = 'איכות נמוכה';
+                        continue;
+                    end
+                    
+                    validCount = validCount + 1;
+                    
+                    % חיפוש במאגר (שנמצא בזיכרון)
+                    bestScore = 0;
+                    bestMatchName = 'לא זוהה';
+                    
+                    currData.minutiae = template;
+                    currData.descriptors = descriptors;
+                    
+                    for i = 1:length(fingerprintDB)
+                        dbData.minutiae = fingerprintDB(i).template;
+                        if isfield(fingerprintDB(i), 'descriptors')
+                            dbData.descriptors = fingerprintDB(i).descriptors;
+                        else, dbData.descriptors = []; end
+                        
+                        [score, ~, ~] = find_best_match(dbData, currData, 0);
+                        
+                        if score > bestScore
+                            bestScore = score;
+                            if score >= PASS_THRESHOLD
+                                bestMatchName = fingerprintDB(i).name;
+                            end
+                        end
+                    end
+                    
+                    % בדיקת הצלחה
+                    matchParts = strsplit(bestMatchName, '_');
+                    matchID = matchParts{1};
+                    
+                    if strcmp(realID, matchID)
+                        status = 'V הצלחה';
+                        correctCount = correctCount + 1;
+                    else
+                        status = 'X שגיאה';
+                    end
+                    
+                    results{end+1, 1} = thisFile;      
+                    results{end, 2} = realID;          
+                    results{end, 3} = bestMatchName;   
+                    results{end, 4} = bestScore;       
+                    results{end, 5} = status;          
+                    
+                catch err
+                    results{end+1, 1} = thisFile;
+                    results{end, 2} = realID;
+                    results{end, 3} = 'Error';
+                    results{end, 4} = 0;
+                    results{end, 5} = 'שגיאה';
+                end
+            end
+            close(wb);
+            
+            % חישוב אחוזי הצלחה
+            if validCount > 0
+                successRate = (correctCount / validCount) * 100;
+            else
+                successRate = 0;
+            end
+            
+            % הצגת התוצאות
+            f = figure('Name', 'תוצאות זיהוי וסטטיסטיקה', 'NumberTitle', 'off', ...
+                       'Position', [100 100 650 500], 'MenuBar', 'none');
+                   
+            uicontrol('Style', 'text', 'Parent', f, ...
+                      'String', sprintf('אחוזי הצלחה: %.2f%% (%d/%d)', successRate, correctCount, validCount), ...
+                      'FontSize', 16, 'FontWeight', 'bold', 'ForegroundColor', 'blue', ...
+                      'Position', [20 450 600 30]);
+            
+            t = uitable(f, 'Data', results, ...
+                        'ColumnName', {'שם קובץ', 'זהות אמיתית', 'זוהה כ-', 'ציון', 'סטטוס'}, ...
+                        'ColumnWidth', {120, 80, 120, 60, 80}, ...
+                        'Position', [20 20 610 420]);
+            
+        % === 5. הצגת המאגר ===
+        case 5
+            if isempty(fingerprintDB)
+                msgbox('המאגר ריק.');
+            else
+                listdlg('ListString', {fingerprintDB.name}, 'Name', 'רשימת משתמשים', 'ListSize', [300 400]);
+            end
+    end
+end
+
+
+
+% ========================================================================
+% FILENAME: Image_processing.m
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\scripts
 % ========================================================================
 
 %% שלב 0: הגדרות נתיבים וניקוי
@@ -9,7 +310,7 @@ addpath('functions'); % וודא שתיקיית הפונקציות זמינה
 
 %% שלב 1: טעינת התמונה
 % וודא שהנתיב תואם לקובץ שלך
-filename = 'data/DB1_B/101_1.tif'; 
+filename = 'data/DB1_B/103_5.tif'; 
 img = imread(filename);
 
 if size(img,3) == 3
@@ -24,7 +325,7 @@ img = (img - min(img(:))) / (max(img(:)) - min(img(:)));
 
 % 1. סגמנטציה - הפרדת האצבע מהרקע
 % תיקון: העלאת הסף ל-0.2 מנקה את רעשי הרקע (הבלוקים)
-[normim, mask, maskind] = ridgesegment(img, 16, 0.2);
+[normim, mask, maskind] = ridgesegment(img, 1, 0.2);
 
 % 2. חישוב כיווניות (Orientation)
 orientim = ridgeorient(normim, 1, 5, 5);
@@ -119,289 +420,8 @@ linkaxes;
 
 
 % ========================================================================
-% FILENAME: main_system.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab
-% ========================================================================
-
-%% ========================================================================
-%% מערכת ביומטרית לזיהוי טביעת אצבע - main_system.m
-%% ========================================================================
-clc; clear; close all;
-
-% --- 1. הגדרת נתיבים ---
-addpath(genpath('src')); 
-addpath('data');         
-
-% --- 2. הגדרות מערכת ---
-cfg = get_config();
-dbFileName = cfg.db_filename; 
-PASS_THRESHOLD = cfg.match.pass_threshold;
-minPointsEnroll = cfg.enroll.min_minutiae; 
-
-while true
-    %% תפריט ראשי
-    choice = menu('מערכת ביומטרית - תפריט ראשי', ...
-                  '1. רישום משתמש בודד (Single Enrollment)', ...
-                  '2. זיהוי משתמש בודד (Single Identification)', ...
-                  '3. רישום המוני (Batch Enrollment)', ...
-                  '4. זיהוי המוני + סטטיסטיקה (Batch Identification)', ...
-                  '5. הצגת המאגר', ...
-                  '6. יציאה');
-              
-    if choice == 6 || choice == 0
-        disp('יציאה מהמערכת.');
-        break;
-    end
-    
-    %% משתנים לשימוש
-    currentData = []; 
-    currentImg = [];
-    fullPath = '';
-    
-    %% --- טיפול במקרים 1 ו-2 (קבצים בודדים) ---
-    if choice == 1 || choice == 2
-        [file, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Fingerprint Files'}, ...
-                                 'בחר תמונת טביעת אצבע', 'data/');
-        
-        if isequal(file, 0), continue; end 
-        
-        fullPath = fullfile(path, file);
-        try
-            currentImg = imread(fullPath);
-            disp('>> מעבד תמונה...');
-            [template, ~, ~, descriptors] = process_fingerprint(currentImg); 
-            
-            if size(template, 1) < minPointsEnroll
-                msgbox(sprintf('איכות נמוכה: %d נקודות (דרוש %d).', size(template, 1), minPointsEnroll), 'שגיאה', 'error');
-                continue;
-            end
-            
-            currentData.minutiae = template;
-            currentData.descriptors = descriptors;
-            
-        catch err
-            errordlg(['שגיאה בעיבוד הקובץ: ' err.message]);
-            continue;
-        end
-    end
-    
-    %% --- לוגיקה לפי בחירה ---
-    switch choice
-        
-        % === 1. רישום בודד ===
-        case 1
-            name = inputdlg('הכנס שם משתמש:', 'רישום');
-            if ~isempty(name) && ~isempty(name{1})
-                add_user_to_db(dbFileName, name{1}, currentData, fullPath);
-            end
-            
-        % === 2. זיהוי בודד ===
-        case 2
-            if ~isfile(dbFileName)
-                msgbox('המאגר ריק.', 'שגיאה', 'error'); continue;
-            end
-            load(dbFileName, 'fingerprintDB');
-            
-            bestScore = 0;
-            bestName = 'לא ידוע';
-            bestAlignedPoints = [];
-            bestDbTemplate = [];
-            
-            wb = waitbar(0, 'סורק מאגר...');
-            for i = 1:length(fingerprintDB)
-                waitbar(i/length(fingerprintDB), wb);
-                
-                dbData.minutiae = fingerprintDB(i).template;
-                if isfield(fingerprintDB(i), 'descriptors')
-                    dbData.descriptors = fingerprintDB(i).descriptors;
-                else, dbData.descriptors = []; end
-                
-                [score, alignedData, ~] = find_best_match(dbData, currentData, 0);
-                
-                if score > bestScore
-                    bestScore = score;
-                    bestName = fingerprintDB(i).name;
-                    bestAlignedPoints = alignedData;
-                    bestDbTemplate = fingerprintDB(i).template;
-                end
-            end
-            close(wb);
-            
-            if bestScore >= PASS_THRESHOLD
-                msgbox(['זוהה: ' bestName ' (ציון: ' num2str(bestScore) ')'], 'הצלחה');
-                visualize_match_result(currentImg, bestDbTemplate, bestAlignedPoints, bestName, bestScore);
-            else
-                msgbox(['לא נמצאה התאמה. ציון הכי גבוה: ' num2str(bestScore)], 'כישלון', 'error');
-            end
-            
-        % === 3. רישום המוני ===
-        case 3
-            [files, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Fingerprint Files'}, ...
-                                      'בחר תמונות לרישום', 'data/', 'MultiSelect', 'on');
-            if isequal(files, 0), continue; end
-            if ischar(files), files = {files}; end
-            
-            wb = waitbar(0, 'מבצע רישום המוני...');
-            successCount = 0;
-            for k = 1:length(files)
-                waitbar(k/length(files), wb, sprintf('רושם: %s...', files{k}));
-                fullPath = fullfile(path, files{k});
-                try
-                    img = imread(fullPath);
-                    [template, ~, ~, descriptors] = process_fingerprint(img);
-                    
-                    if size(template, 1) >= minPointsEnroll
-                        [~, nameByUser, ~] = fileparts(files{k});
-                        tempData.minutiae = template;
-                        tempData.descriptors = descriptors;
-                        add_user_to_db(dbFileName, nameByUser, tempData, fullPath);
-                        successCount = successCount + 1;
-                    end
-                catch, end
-            end
-            close(wb);
-            msgbox(['נוספו ' num2str(successCount) ' משתמשים.'], 'סיום');
-
-        % === 4. זיהוי המוני + חישוב אחוזי הצלחה ===
-        case 4
-            if ~isfile(dbFileName)
-                msgbox('המאגר ריק.', 'שגיאה', 'error'); continue;
-            end
-            load(dbFileName, 'fingerprintDB');
-            
-            [files, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Fingerprint Files'}, ...
-                                      'בחר תמונות לבדיקה', 'data/', 'MultiSelect', 'on');
-            if isequal(files, 0), continue; end
-            if ischar(files), files = {files}; end
-            
-            results = {}; 
-            wb = waitbar(0, 'מבצע זיהוי המוני...');
-            
-            correctCount = 0;
-            validCount = 0; % סופר רק תמונות שהצלחנו לעבד
-            
-            for k = 1:length(files)
-                waitbar(k/length(files), wb, sprintf('בודק: %s...', files{k}));
-                thisFile = files{k};
-                fullPath = fullfile(path, thisFile);
-                
-                % --- חילוץ "הזהות האמיתית" משם הקובץ (Ground Truth) ---
-                [~, fNameNoExt, ~] = fileparts(thisFile);
-                parts = strsplit(fNameNoExt, '_');
-                realID = parts{1}; % לוקח את החלק הראשון (למשל '101' מתוך '101_8')
-                
-                try
-                    img = imread(fullPath);
-                    [template, ~, ~, descriptors] = process_fingerprint(img);
-                    
-                    % דילוג על תמונות גרועות (לא נכנסות לסטטיסטיקה או נחשבות כישלון, לבחירתך)
-                    % כאן נסמן כ"איכות נמוכה" ולא נספור באחוזים
-                    if size(template, 1) < minPointsEnroll
-                        results{end+1, 1} = thisFile;
-                        results{end, 2} = realID;
-                        results{end, 3} = '---';
-                        results{end, 4} = 0;
-                        results{end, 5} = 'איכות נמוכה';
-                        continue;
-                    end
-                    
-                    validCount = validCount + 1;
-                    
-                    % חיפוש במאגר
-                    bestScore = 0;
-                    bestMatchName = 'לא זוהה';
-                    
-                    currData.minutiae = template;
-                    currData.descriptors = descriptors;
-                    
-                    for i = 1:length(fingerprintDB)
-                        dbData.minutiae = fingerprintDB(i).template;
-                        if isfield(fingerprintDB(i), 'descriptors')
-                            dbData.descriptors = fingerprintDB(i).descriptors;
-                        else, dbData.descriptors = []; end
-                        
-                        [score, ~, ~] = find_best_match(dbData, currData, 0);
-                        
-                        if score > bestScore
-                            bestScore = score;
-                            if score >= PASS_THRESHOLD
-                                bestMatchName = fingerprintDB(i).name;
-                            end
-                        end
-                    end
-                    
-                    % --- בדיקת הצלחה (Success Check) ---
-                    % מחלצים גם את ה-ID מהשם שנמצא במאגר (למקרה שגם הוא 101_1)
-                    matchParts = strsplit(bestMatchName, '_');
-                    matchID = matchParts{1};
-                    
-                    if strcmp(realID, matchID)
-                        status = 'V הצלחה';
-                        correctCount = correctCount + 1;
-                    else
-                        status = 'X שגיאה';
-                    end
-                    
-                    % שמירה לטבלה
-                    results{end+1, 1} = thisFile;      % קובץ
-                    results{end, 2} = realID;          % מי זה באמת
-                    results{end, 3} = bestMatchName;   % מי המערכת חשבה שזה
-                    results{end, 4} = bestScore;       % ציון
-                    results{end, 5} = status;          % סטטוס
-                    
-                catch err
-                    results{end+1, 1} = thisFile;
-                    results{end, 2} = realID;
-                    results{end, 3} = 'Error';
-                    results{end, 4} = 0;
-                    results{end, 5} = 'שגיאה';
-                end
-            end
-            close(wb);
-            
-            % --- חישוב אחוזי הצלחה ---
-            if validCount > 0
-                successRate = (correctCount / validCount) * 100;
-            else
-                successRate = 0;
-            end
-            
-            % --- הצגת התוצאות ---
-            f = figure('Name', 'תוצאות זיהוי וסטטיסטיקה', 'NumberTitle', 'off', ...
-                       'Position', [100 100 650 500], 'MenuBar', 'none');
-                   
-            % כותרת עם האחוזים
-            uicontrol('Style', 'text', 'Parent', f, ...
-                      'String', sprintf('אחוזי הצלחה: %.2f%% (%d/%d)', successRate, correctCount, validCount), ...
-                      'FontSize', 16, 'FontWeight', 'bold', 'ForegroundColor', 'blue', ...
-                      'Position', [20 450 600 30]);
-            
-            % הטבלה
-            t = uitable(f, 'Data', results, ...
-                        'ColumnName', {'שם קובץ', 'זהות אמיתית', 'זוהה כ-', 'ציון', 'סטטוס'}, ...
-                        'ColumnWidth', {120, 80, 120, 60, 80}, ...
-                        'Position', [20 20 610 420]);
-            
-        % === 5. הצגת המאגר ===
-        case 5
-            if isfile(dbFileName)
-                load(dbFileName, 'fingerprintDB');
-                if isempty(fingerprintDB)
-                    msgbox('המאגר קיים אך ריק.');
-                else
-                    listdlg('ListString', {fingerprintDB.name}, 'Name', 'רשימת משתמשים', 'ListSize', [300 400]);
-                end
-            else
-                msgbox('אין נתונים.');
-            end
-    end
-end
-
-
-
-% ========================================================================
 % FILENAME: run_batch_gabor.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\scripts
 % ========================================================================
 
 %% run_batch_gabor.m - עיבוד אצווה עם Gabor ב-MATLAB בלבד
@@ -437,7 +457,9 @@ for k = 1:totalFiles
         img = imread(fullPath);
         
         % הפונקציה הזו מחליפה את הסקריפט של פייתון + העיבוד הקודם
-        [skeletonMask, ~, enhancedImg] = process_fingerprint_gabor(img);
+        [~, ~, ~, ~, debugData] = process_fingerprint(img, false);
+        skeletonMask = debugData.skeletonImg;
+        enhancedImg  = debugData.enhancedImg;
         
         % --- שמירה ---
         % שמירת השלד (נהפוך צבעים אם צריך שחור על גבי לבן ל-PNG)
@@ -464,7 +486,7 @@ msgbox(['הסתיים העיבוד! הקבצים נשמרו ב: ' saveFolder]);
 
 % ========================================================================
 % FILENAME: visualiz.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\scripts
 % ========================================================================
 
 %% run_visualizer.m - סקריפט לבחירת תמונה והצגת ה-Pipeline
@@ -480,10 +502,10 @@ end
 % --------------------------------------------------
 
 %% === הגדרות משתמש ===
-USE_FIXED_FILE = false; 
+USE_FIXED_FILE = true; 
 
 % הגדר כאן רק את שם הקובץ
-FIXED_FILENAME = '103_3.tif'; 
+FIXED_FILENAME = '103_5.tif'; 
 
 % הגדר כאן את הנתיב לתיקייה
 FIXED_FOLDER = 'C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\data\DB1_B';
@@ -538,47 +560,503 @@ end
 
 
 % ========================================================================
-% FILENAME: add_user_to_db.m
+% FILENAME: process_fingerprint.m
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
 % ========================================================================
 
-function add_user_to_db(fname, name, dataStruct, path)
-    % add_user_to_db - מוסיפה משתמש חדש לקובץ הנתונים
-    % Inputs:
-    %   fname:      שם קובץ ה-MAT של המאגר
-    %   name:       שם המשתמש להוספה
-    %   dataStruct: מבנה המכיל minutiae ו-descriptors
-    %   path:       נתיב התמונה המקורית (לרפרנס)
+function [template, roiMask, rawMinutiae, descriptors, debug] = process_fingerprint(img, do_viz)
+    % process_fingerprint - גרסה מאוחדת ונקייה
     
-    if isfile(fname)
-        load(fname, 'fingerprintDB');
-        % בדיקת תאימות לאחור (הוספת שדה חסר אם צריך)
-        if ~isfield(fingerprintDB, 'descriptors')
-             [fingerprintDB(:).descriptors] = deal([]); 
+    if nargin < 2, do_viz = false; end
+    cfg = get_config();
+    debug = struct();
+    
+    % 1. המרה לאפור ונרמול ל-Double
+    if size(img, 3) == 3, img = rgb2gray(img); end
+    img = im2double(img);
+    debug.imgGray = img;
+    
+    % --- שלב א': הכנה ללא חיתוך פיזי ---
+    
+    % 2. חישוב מסיכה (ROI) עם הפונקציה המתוקנת
+    roiMask = get_roi_mask(img);
+    debug.roiMask = roiMask;
+    
+    % 3. נרמול גלובלי (במקום ridgesegment)
+    % מנרמלים את כל התמונה לתוחלת 0 וסטיית תקן 1.
+    % זה שומר על גודל התמונה המקורי ומונע הזזת קואורדינטות.
+    mean_val = mean(img(:));
+    std_val = std(img(:));
+    normim = (img - mean_val) / (std_val + eps);
+    
+    % --- שלב ב': שיפור Gabor ---
+    
+    % 4. חישוב כיוונים (Orientation Map)
+    orientim = ridgeorient(normim, cfg.gabor.grad_sigma, cfg.gabor.block_sigma, cfg.gabor.smooth_sigma);
+    
+    % 5. חישוב תדרים (Frequency Map)
+    % שולחים את המסכה כדי לא לחשב תדרים על הרקע
+    [freqim, ~] = ridgefreq(normim, roiMask, orientim, cfg.gabor.freq_blk, ...
+                            cfg.gabor.freq_wind, cfg.gabor.min_wl, cfg.gabor.max_wl);
+    
+    % 6. שיפור תמונה (Gabor Filtering)
+    enhancedImg = ridgefilter(normim, orientim, freqim, cfg.gabor.kx, cfg.gabor.ky, 0);
+    
+    % החלת המסכה על התמונה המשופרת (ניקוי רקע)
+    enhancedImg = enhancedImg .* roiMask;
+    debug.enhancedImg = enhancedImg; 
+    
+    % 7. בינאריזציה וניקוי
+    % שימוש בסף 0 (ערכים חיוביים = רכס)
+    binaryImg = enhancedImg > 0;
+    
+    % חיתוך סופי לפי המסיכה של get_roi_mask
+    binaryImg = binaryImg & roiMask; 
+    
+    % ניקוי חורים ורעשים
+    binaryImg = bwareaopen(binaryImg, 10);        
+    binaryImg = ~bwareaopen(~binaryImg, 10);      
+    
+    debug.binaryMasked = binaryImg;
+    
+    % 8. יצירת שלד (Skeletonization)
+    skeletonImg = bwmorph(binaryImg, 'thin', Inf);
+    skeletonImg = bwmorph(skeletonImg, 'clean');
+    skeletonImg = bwmorph(skeletonImg, 'diag');
+    skeletonImg = bwmorph(skeletonImg, 'spur', 5); 
+    
+    debug.skeletonImg = skeletonImg;
+    
+    % --- שלב ג': חילוץ מאפיינים ---
+    
+    % 9. חילוץ נקודות (Minutiae) מהשלד הנקי
+    rawMinutiae = extract_minutiae_features(skeletonImg, cfg);
+    debug.rawMinutiae = rawMinutiae;
+    
+    % 10. סינון סופי
+    template = filter_minutiae(rawMinutiae, roiMask, cfg);
+    debug.finalTemplate = template;
+    
+    % 11. חישוב מתארים
+    descriptors = compute_descriptors(template, cfg);
+    
+    % --- ויזואליזציה ---
+    if do_viz
+        visualize_pipeline(debug, cfg);
+    end
+end
+
+
+
+% ========================================================================
+% FILENAME: get_config.m
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\00_Config
+% ========================================================================
+
+function cfg = get_config()
+    % get_config - קובץ הגדרות מרכזי (גרסה מתוקנת)
+    
+    %% 1. הגדרות מערכת וקבצים
+    cfg.db_filename = fullfile('database', 'fingerprint_database.mat');
+    
+    %% 2. הגדרות Gabor (שיפור תמונה מתקדם)
+    cfg.gabor.blk_sze = 16;       % גודל בלוק לסגמנטציה
+    cfg.gabor.thresh = 0.05;       % סף שונות להפרדת רקע
+    cfg.gabor.grad_sigma = 1;     % סיגמא לחישוב נגזרות כיוון
+    cfg.gabor.block_sigma = 7;    % סיגמא להחלקת כיוונים
+    cfg.gabor.smooth_sigma = 7;   % החלקה סופית של שדה הכיוונים
+    cfg.gabor.freq_blk = 38;      % גודל בלוק לחישוב תדר
+    cfg.gabor.freq_wind = 5;      % חלון חישוב תדר
+    cfg.gabor.min_wl = 5;         % אורך גל מינימלי
+    cfg.gabor.max_wl = 15;        % אורך גל מקסימלי
+    cfg.gabor.kx = 0.65;          % חוזק הסינון בציר X
+    cfg.gabor.ky = 0.65;          % חוזק הסינון בציר Y
+    
+    %% 3. הגדרות עיבוד המשך ובינאריזציה
+    cfg.binarize.sens = 0.5;      
+    
+    %% 4. הגדרות רישום ובקרת איכות (Enrollment)
+    cfg.enroll.min_minutiae = 12; % מינימום נקודות לרישום
+    
+    %% 5. הגדרות מסיכה ועיבוד מקדים
+    cfg.roi.erosion_size = 0;   
+    cfg.roi.closing_size = 20;  
+    
+    cfg.preprocess.gauss_sigma = 0.8;       
+    cfg.preprocess.bin_sensitivity = 0.65;  
+    
+    %% 6. חילוץ מאפיינים
+    cfg.feature.descriptor_k = 5;   
+    cfg.feature.angle_steps = 5;    
+    
+    %% 7. הגדרות סינון (Filtering)
+    cfg.filter.border_margin = 25; 
+    cfg.filter.min_distance = 20;  
+    
+    % סינון גיאומטרי
+    cfg.filter.max_short_ridge_dist = 15; 
+    cfg.filter.max_bridge_dist = 12; 
+    cfg.filter.max_spike_dist = 8;
+    cfg.filter.angle_tolerance = deg2rad(35);
+    
+    %% 8. הגדרות התאמה (Matching)
+    cfg.match.pass_threshold = 12.0;    
+    cfg.match.candidate_count = 50;     
+    
+    cfg.match.max_dist = 15;            
+    cfg.match.max_ang_deg = 45;         
+    cfg.match.max_ang_rad = deg2rad(cfg.match.max_ang_deg);
+    
+    %% 9. הגדרות ניקוד (Scoring)
+    cfg.score.sigma_dist = 10;     
+    cfg.score.sigma_ang_rad = 0.5; 
+    cfg.score.sigma_desc = 45;     
+end
+
+
+
+% ========================================================================
+% FILENAME: get_roi_mask.m
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\01_Enhancement
+% ========================================================================
+
+function mask = get_roi_mask(img)
+    % get_roi_mask - גרסה מתוקנת המונעת חיתוך של טביעות מקוטעות
+    
+    cfg = get_config();
+    
+    % 1. זיהוי טקסטורה (כמו במקור)
+    textureMap = rangefilt(img);
+    level = graythresh(textureMap);
+    mask = imbinarize(textureMap, level);
+    
+    % 2. חיבור וסגירה
+    % שימוש בערך גדול כדי לאחד את כל הפסים לגוש אחד
+    seClose = strel('disk', cfg.roi.closing_size); 
+    mask = imclose(mask, seClose);
+    
+    % 3. מילוי חורים (קריטי לחישוב מרחק תקין)
+    mask = imfill(mask, 'holes');
+    
+    % --- התיקון הקריטי ---
+    % במקום bwareafilt(mask, 1) ששומר רק אחד, נשמור כל גוש משמעותי
+    % נניח שכל כתם שקטן מ-400 פיקסלים הוא רעש, וכל השאר הוא מידע רלוונטי
+    mask = bwareaopen(mask, 400); 
+    
+    mask = logical(mask);
+end
+
+
+
+% ========================================================================
+% FILENAME: ridgefilter.m
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\01_Enhancement
+% ========================================================================
+
+function [newim] = ridgefilter(im, orient, freq, kx, ky, showfilter)
+    % RIDGEFILTER - גרסה מתוקנת עם Padding (מונעת מסגרת שחורה)
+    
+    if nargin == 5; showfilter = 0; end
+    
+    angleInc = 3;
+    im = double(im);
+    [rows, cols] = size(im);
+    newim = zeros(rows,cols);
+    
+    % --- שלב א: הכנת התדרים ---
+    freq_1d = freq(:);
+    ind = find(freq_1d > 0);
+    freq_1d(ind) = round(freq_1d(ind)*100)/100;
+    unifreqs = unique(freq_1d(ind));
+    
+    % חישוב גודל הפילטר המקסימלי כדי לדעת כמה ריפוד צריך
+    % (ערך משוער בטוח)
+    max_sze = 60; 
+    
+    % --- שלב ב: ריפוד התמונה (Padding) ---
+    % אנו מרפדים את התמונה בשכפול מראה כדי למנוע אפקטי קצה
+    im_padded = padarray(im, [max_sze max_sze], 'symmetric');
+    
+    % יצירת הפילטרים
+    sigmax = 0; sigmay = 0;
+    sze = zeros(length(unifreqs),1);
+    filters = cell(length(unifreqs), 180/angleInc);
+    
+    for k = 1:length(unifreqs)
+        sigmax = kx/unifreqs(k);
+        sigmay = ky/unifreqs(k);
+        sze(k) = round(3*max(sigmax,sigmay));
+        [x,y] = meshgrid(-sze(k):sze(k));
+        reffilter = exp(-(x.^2/sigmax^2 + y.^2/sigmay^2)/2)...
+                    .*cos(2*pi*unifreqs(k)*x);
+        for o = 1:180/angleInc
+            filters{k,o} = imrotate(reffilter, -(o*angleInc+90), 'bilinear', 'crop'); 
         end
-    else
-        % יצירת מאגר חדש אם לא קיים
-        fingerprintDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {});
+    end
+
+    % --- שלב ג: סינון התמונה ---
+    maxorientindex = round(180/angleInc);
+    orientindex = round(orient/pi*180/angleInc);
+    i = find(orientindex < 1);   orientindex(i) = orientindex(i)+maxorientindex;
+    i = find(orientindex > maxorientindex); orientindex(i) = orientindex(i)-maxorientindex; 
+    
+    for k = 1:length(unifreqs)
+        thisfreq = unifreqs(k);
+        freqind = find(freq_1d == thisfreq);
+        
+        current_sze = sze(k);
+        
+        for o = 1:180/angleInc
+            ind = intersect(freqind, find(orientindex(:)==o));
+            if ~isempty(ind)
+                filter = filters{k,o};
+                [r, c] = ind2sub([rows,cols], ind);
+                
+                % לולאה על הפיקסלים הרלוונטיים
+                for i = 1:length(r)
+                    % המיקום בתמונה המרופדת
+                    r_pad = r(i) + max_sze;
+                    c_pad = c(i) + max_sze;
+                    
+                    % חילוץ הבלוק מתוך התמונה המרופדת (בטוח לגמרי, אין חריגה)
+                    blk = im_padded(r_pad-current_sze:r_pad+current_sze, ...
+                                    c_pad-current_sze:c_pad+current_sze);
+                                
+                    newim(r(i),c(i)) = sum(sum(blk.*filter));
+                end
+            end
+        end
+    end
+end
+
+
+
+% ========================================================================
+% FILENAME: ridgefreq.m
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\01_Enhancement
+% ========================================================================
+
+% =========================================================================
+% RIDGEFREQ - חישוב תדירות הרכסים (Ridge Frequency)
+% =========================================================================
+% תפקיד הפונקציה בפועל:
+% הפונקציה מודדת כמה "צפופים" הקווים בטביעת האצבע.
+% היא לוקחת בלוקים מהתמונה, מסובבת אותם כך שהקווים יהיו אנכיים,
+% ואז סופרת כמה פיקסלים יש בין פס שחור אחד לשני (אורך גל).
+%
+% למה זה קריטי?
+% כדי שמסנן גאבור יידע איזה "רוחב" של מכחול הוא צריך כדי לצייר מחדש את הקווים.
+% אם המסנן יהיה רחב מדי - הוא יחבר שני קווים סמוכים.
+% אם הוא יהיה צר מדי - הוא לא יצליח לסגור חורים בתוך הקו.
+%
+% קלט: תמונה, מסכה, ומפת כיוונים.
+% פלט: מפה של תדרים (1 חלקי המרחק בין הרכסים).
+% =========================================================================
+
+
+
+function [freqim, medianfreq] = ridgefreq(im, mask, orientim, blksze, windsze, ...
+                                             minWaveLength, maxWaveLength)
+% RIDGEFREQ - Estimates the local ridge frequency across a fingerprint
+%
+% Usage: [freqim, medianfreq] = ridgefreq(im, mask, orientim, blksze, windsze, ...
+%                                         minWaveLength, maxWaveLength)
+%
+% Arguments:  im       - Image to be processed.
+%             mask     - Mask defining ridge regions.
+%             orientim - Ridge orientation image.
+%             blksze   - Size of image block to use (say 32).
+%             windsze  - Window length used to identify peaks (say 5).
+%             minWaveLength,  maxWaveLength - Minimum and maximum ridge
+%                             wavelengths, in pixels (say 5 and 15).
+%
+% Returns:    freqim     - An image  the same size as im with  values set to
+%                          the estimated ridge spatial frequency.
+%             medianfreq - Median frequency value evaluated across the
+%                          fingerprint.
+
+    [rows, cols] = size(im);
+    freqim = zeros(rows, cols);
+    
+    for r = 1:blksze:rows-blksze+1
+        for c = 1:blksze:cols-blksze+1
+            blkim = im(r:r+blksze-1, c:c+blksze-1);
+            blkor = orientim(r:r+blksze-1, c:c+blksze-1);
+            
+            freq = freqest(blkim, blkor, windsze, minWaveLength, maxWaveLength);
+            freqim(r:r+blksze-1, c:c+blksze-1) = freq;
+        end
     end
     
-    % יצירת רשומה חדשה
-    newEntry.name = name;
-    newEntry.template = dataStruct.minutiae;       
-    newEntry.descriptors = dataStruct.descriptors; 
-    newEntry.imagePath = path;
+    % Mask out frequencies calculated for non-ridge regions
+    freqim = freqim .* mask;
     
-    % הוספה למערך ושמירה
-    fingerprintDB(end+1) = newEntry;
-    save(fname, 'fingerprintDB');
+    % Generate median frequency
+    medianfreq = median(freqim(freqim > 0));
+end
+
+% פונקציית עזר פנימית לחישוב תדר בבלוק בודד
+function freq = freqest(im, orientim, windsze, minWaveLength, maxWaveLength)
+    [rows, cols] = size(im);
     
-    msgbox(['המשתמש ' name ' נשמר בהצלחה!'], 'אישור');
+    % Find mean orientation within the block
+    cosorient = mean(cos(2*orientim(:)));
+    sinorient = mean(sin(2*orientim(:)));
+    orient = atan2(sinorient, cosorient)/2;
+    
+    % Rotate the image block so that the ridges are vertical
+    rotim = imrotate(im, orient/pi*180 + 90, 'bicubic', 'crop');
+    
+    % Sum down the columns to get a projection of the grey values
+    proj = sum(rotim);
+    
+    % Find peaks in projected grey values
+    dilation = ordfilt2(proj, windsze, ones(1,windsze));
+    maxpts = (dilation == proj) & (proj > mean(proj));
+    maxind = find(maxpts);
+    
+    % Determine spatial frequency of ridges
+    if length(maxind) < 2
+        freq = 0;
+    else
+        NoOfPeaks = length(maxind);
+        waveLength = (maxind(end) - maxind(1)) / (NoOfPeaks - 1);
+        if waveLength >= minWaveLength && waveLength <= maxWaveLength
+            freq = 1/waveLength;
+        else
+            freq = 0;
+        end
+    end
+end
+
+
+
+% ========================================================================
+% FILENAME: ridgeorient.m
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\01_Enhancement
+% ========================================================================
+
+% =========================================================================
+% RIDGEORIENT - חישוב מפת כיוונים (Orientation Map)
+% =========================================================================
+% תפקיד הפונקציה בפועל:
+% הפונקציה עוברת על כל נקודה בתמונה ומחשבת את ה"זווית" של הרכס באותו מקום.
+% היא משתמשת בנגזרות (Gradients) כדי להבין לאן הקו "זורם".
+%
+% למה זה קריטי?
+% מסנן גאבור (בשלב הבא) חייב לדעת את הזווית הזו כדי להחליק את התמונה
+% *עם* כיוון הקו (כדי לחבר שברים) ולא *נגד* כיוון הקו (שזה ימרח אותו).
+%
+% קלט: תמונה מנורמלת (מ-ridgesegment).
+% פלט: מטריצה באותו גודל כמו התמונה, המכילה זוויות (ברדיאנים) לכל פיקסל.
+% =========================================================================
+
+
+
+function [orientim] = ridgeorient(im, gradientsigma, blocksigma, orientsmoothsigma)
+% RIDGEORIENT - Estimates the local orientation of ridges in a fingerprint
+%
+% Usage:  [orientim] = ridgeorient(im, gradientsigma, blocksigma, ...
+%                                    orientsmoothsigma)
+%
+% Arguments:  im                - A normalised input image.
+%             gradientsigma     - Sigma of the derivative of Gaussian
+%                                 used to compute image gradients.
+%             blocksigma        - Sigma of the Gaussian weighting used to
+%                                 sum the gradient moments.
+%             orientsmoothsigma - Sigma of the Gaussian used to smooth
+%                                 the final orientation vector field.
+% 
+% Returns:    orientim          - The orientation image in radians.
+%                                 Orientation values are between 0 and pi.
+
+    [rows, cols] = size(im);
+    
+    % Calculate image gradients.
+    sze = fix(6*gradientsigma);   if ~mod(sze,2); sze = sze+1; end
+    f = fspecial('gaussian', sze, gradientsigma); % Generate Gaussian filter.
+    [fx, fy] = gradient(f);                       % Gradient of Gausian.
+    
+    Gx = imfilter(im, fx, 'symmetric', 'conv');
+    Gy = imfilter(im, fy, 'symmetric', 'conv');
+    
+    % Estimate the local ridge orientation at each point by finding the
+    % principal axis of variation in the image gradients.
+    Gxx = Gx.^2;       % Covariance data for the image gradients
+    Gxy = Gx.*Gy;
+    Gyy = Gy.^2;
+    
+    % Now smooth the covariance data to perform a weighted summation of the
+    % data.
+    sze = fix(6*blocksigma);   if ~mod(sze,2); sze = sze+1; end
+    f = fspecial('gaussian', sze, blocksigma);
+    Gxx = imfilter(Gxx, f, 'symmetric', 'conv');
+    Gxy = 2*imfilter(Gxy, f, 'symmetric', 'conv');
+    Gyy = imfilter(Gyy, f, 'symmetric', 'conv');
+    
+    % Analytic solution of principal direction
+    denom = sqrt(Gxy.^2 + (Gxx - Gyy).^2) + eps;
+    sin2theta = Gxy./denom;            % Sine and cosine of doubled angles
+    cos2theta = (Gxx - Gyy)./denom;
+    
+    % Smooth the orientation vector field using a low pass filter
+    if orientsmoothsigma
+        sze = fix(6*orientsmoothsigma);   if ~mod(sze,2); sze = sze+1; end
+        f = fspecial('gaussian', sze, orientsmoothsigma);
+        cos2theta = imfilter(cos2theta, f, 'symmetric', 'conv');
+        sin2theta = imfilter(sin2theta, f, 'symmetric', 'conv');
+    end
+    
+    % Calculate the orientation angle
+    orientim = pi/2 + atan2(sin2theta, cos2theta)/2;
+end
+
+
+
+% ========================================================================
+% FILENAME: ridgesegment.m
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\01_Enhancement
+% ========================================================================
+
+function [normim, mask, maskind] = ridgesegment(im, blksze, thresh)
+    % RIDGESEGMENT - גרסה נקייה ללא חיתוך (No Crop)
+    
+    im = double(im);
+    [rows, cols] = size(im);  
+    
+    % 1. נרמול ראשוני
+    im = (im - mean(im(:))) / std(im(:));
+    
+    % 2. חישוב שונות לכל בלוק
+    stddevim = zeros(rows,cols);
+    for r = 1:blksze:rows-blksze+1
+        for c = 1:blksze:cols-blksze+1
+            block = im(r:r+blksze-1, c:c+blksze-1);
+            stddevim(r:r+blksze-1, c:c+blksze-1) = std(block(:));
+        end
+    end
+    
+    % 3. יצירת מסיכה
+    mask = stddevim > thresh;
+    
+    % 4. ניקוי מורפולוגי של המסיכה (במקום חיתוך!)
+    mask = imfill(mask, 'holes');
+    mask = bwareaopen(mask, 100); % הסרת רעשים קטנים
+    
+    % 5. נרמול סופי
+    maskind = find(mask);
+    if ~isempty(maskind)
+        im = (im - mean(im(maskind))) / std(im(maskind));
+    end
+    
+    normim = im;
 end
 
 
 
 % ========================================================================
 % FILENAME: compute_descriptors.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\02_Extraction
 % ========================================================================
 
 function descriptors = compute_descriptors(minutiae, cfg)
@@ -641,12 +1119,12 @@ end
 
 % ========================================================================
 % FILENAME: extract_minutiae_features.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\02_Extraction
 % ========================================================================
 
 function minutiaeData = extract_minutiae_features(skeletonImage, cfg)
-    % extract_minutiae_features - גרסה סופית ומתוקנת (עם Preallocation)
-    % כוללת טיפול באלכסונים וחישוב זווית אמין
+    % extract_minutiae_features - גרסה מואצת (Optimized)
+    % משתמשת בפונקציות C++ מובנות של MATLAB לזיהוי מהיר של נקודות
     
     %% 1. נרמול ושיפור השלד
     skeletonImage = logical(skeletonImage);
@@ -656,64 +1134,49 @@ function minutiaeData = extract_minutiae_features(skeletonImage, cfg)
         skeletonImage = ~skeletonImage;
     end
     
-    % תיקון קריטי: שימוש ב-thin במקום clean
+    % ניקוי ודיקוק (כמו במקור)
     skeletonImage = bwmorph(skeletonImage, 'thin', Inf);
+    skeletonImage = bwmorph(skeletonImage, 'clean'); % מסיר פיקסלים בודדים
+    skeletonImage = bwmorph(skeletonImage, 'spur', 5); % מסיר קווים קצרצרים (זיזים)
     
-    % ניקוי רעשים נוסף
-    skeletonImage = bwmorph(skeletonImage, 'spur');
+    %% 2. זיהוי טופולוגי מהיר (במקום Crossing Number ידני)
+    % הפונקציה bwmorph רצה ב-C++ ומבצעת את חישוב ה-CN לכל התמונה בבת אחת
     
-    %% 2. הכנה ללולאה (Preallocation - תיקון האזהרה)
-    [H, W] = size(skeletonImage);
+    % מציאת סיומות (End points)
+    bw_endings = bwmorph(skeletonImage, 'endpoints');
+    [r_end, c_end] = find(bw_endings);
     
-    % מוצאים את כל הפיקסלים הדלוקים
-    [rows, cols] = find(skeletonImage);
-    numPixels = length(rows);
+    % מציאת פיצולים (Branch points)
+    bw_branches = bwmorph(skeletonImage, 'branchpoints');
+    [r_bif, c_bif] = find(bw_branches);
     
-    % === התיקון: הקצאת זיכרון מראש ===
-    % במקרה הגרוע ביותר, כל פיקסל הוא נקודת עניין (לא באמת יקרה),
-    % אז נקצה מערך בגודל המקסימלי האפשרי ונמלא אותו.
-    minutiaeData = zeros(numPixels, 4); 
-    count = 0; % מונה למספר הנקודות שמצאנו בפועל
+    %% 3. איחוד המידע וחישוב זוויות
+    numEnd = length(r_end);
+    numBif = length(r_bif);
     
-    %% 3. אימות וסיווג (הלולאה הראשית)
-    for k = 1:numPixels
-        r = rows(k);
-        c = cols(k);
-        
-        % דילוג על שוליים
-        if r < 2 || c < 2 || r > H-1 || c > W-1
-            continue;
-        end
-        
-        % שליפת 8 השכנים במעגל (עם כיוון השעון)
-        blk = skeletonImage(r-1:r+1, c-1:c+1);
-        neighbors_circle = [blk(1,2), blk(1,3), blk(2,3), blk(3,3), ...
-                            blk(3,2), blk(3,1), blk(2,1), blk(1,1), blk(1,2)];
-                     
-        % חישוב Crossing Number (CN)
-        transitions = sum(abs(diff(double(neighbors_circle))));
-        cn = transitions / 2;
-        
-        if cn == 1
-            % === נקודת סיום (Ending) ===
-            angle = calculate_orientation_reliable(skeletonImage, r, c, cfg);
-            count = count + 1;
-            minutiaeData(count, :) = [c, r, 1, angle];
-            
-        elseif cn == 3
-            % === נקודת פיצול (Bifurcation) ===
-            angle = calculate_orientation_reliable(skeletonImage, r, c, cfg);
-            count = count + 1;
-            minutiaeData(count, :) = [c, r, 3, angle];
-        end
+    % הקצאה מראש מדויקת (אין צורך בניחוש גודל)
+    minutiaeData = zeros(numEnd + numBif, 4);
+    
+    % --- עיבוד סיומות (Type = 1) ---
+    for i = 1:numEnd
+        % חישוב זווית רק לנקודות שנמצאו
+        angle = calculate_orientation_reliable(skeletonImage, r_end(i), c_end(i), cfg);
+        minutiaeData(i, :) = [c_end(i), r_end(i), 1, angle];
     end
     
-    % === חיתוך סופי ===
-    % זורקים את השורות המיותרות (האפסים) שנשארו בסוף המערך
-    minutiaeData = minutiaeData(1:count, :);
+    % --- עיבוד פיצולים (Type = 3) ---
+    for i = 1:numBif
+        angle = calculate_orientation_reliable(skeletonImage, r_bif(i), c_bif(i), cfg);
+        
+        % הערה: המיקום של branchpoints ב-bwmorph הוא לפעמים פיקסל אחד ליד
+        % הצומת האמיתי, אבל זה זניח לרוב השימושים.
+        minutiaeData(numEnd + i, :) = [c_bif(i), r_bif(i), 3, angle];
+    end
+    
+    % (אין צורך ב"חיתוך סופי" כי גודל המערך ידוע מראש ומדויק)
 end
 
-%% פונקציית עזר לחישוב זווית (ללא שינוי)
+%% פונקציית עזר לחישוב זווית (ללא שינוי, כפי שביקשת)
 function angle = calculate_orientation_reliable(img, r, c, cfg)
     % קבלת מספר הצעדים מהקונפיגורציה
     steps = cfg.feature.angle_steps;
@@ -761,7 +1224,7 @@ end
 
 % ========================================================================
 % FILENAME: filter_minutiae.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\02_Extraction
 % ========================================================================
 
 function cleanList = filter_minutiae(minutiaeList, roiMask, cfg)
@@ -870,11 +1333,11 @@ end
 
 % ========================================================================
 % FILENAME: find_best_match.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\03_Matching
 % ========================================================================
 
 function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData, inputData, manualThreshold)
-    % find_best_match - השוואה גיאומטרית וחישוב ציון התאמה משוקלל
+    % find_best_match - השוואה גיאומטרית וחישוב ציון התאמה משוקלל (Optimized)
     
     T_pts = templateData.minutiae;
     T_desc = templateData.descriptors;
@@ -931,6 +1394,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
         alignedAng = mod(I_pts(:,4) + dTheta + pi, 2*pi) - pi;
         
         % מציאת השכן הקרוב ביותר במאגר לכל נקודה מיושרת
+        % (אופטימיזציה קטנה: אין צורך במטריצה מלאה, עושים שורה שורה)
         dists = zeros(NI, 1);
         idx = zeros(NI, 1);
         RefCoords = T_pts(:, 1:2);
@@ -958,6 +1422,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
             goodMatches = (angDiffs < angThr) & typeMatch;
             numGoodMatches = sum(goodMatches);
             
+            % דרושות לפחות 3 התאמות חזקות (כולל זווית וסוג) כדי לחשב ניקוד
             if numGoodMatches >= 3
                 % --- חישוב הציון המשופר ---
                 
@@ -970,15 +1435,22 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
                 descScore = sum(exp(-descVals.^2 / (2*sigmaDesc^2)));
                 
                 % 3. שקלול סופי:
-                % avgQuality: כמה המבנה תואם (0 עד 1)
+                % avgQuality: מדד בין 0 ל-1 שמייצג כמה ה"פיט" (Fit) מדויק
                 avgQuality = (geomScore + descScore) / (2 * numGoodMatches);
                 
-                % matchRatio: כמה אחוז מהאצבע הצלחנו להתאים
-                matchRatio = numGoodMatches / min(NI, NT);
+                % === השינוי בנוסחה ===
+                % הנוסחה הישנה הסתמכה על matchRatio שהעניש חיתוכים חלקיים.
+                % הנוסחה החדשה: (איכות * כמות) * פקטור לוגריתמי
                 
-                % הנוסחה הסופית: מענישה אי-התאמות ומתגמלת כמות גבוהה של נקודות
-                % הפקטור (numGoodMatches/5) מעלה את הציון ככל שיש יותר הוכחות
-                currentScore = (avgQuality * matchRatio^2) * 100 * (numGoodMatches / 5);
+                % פקטור בונוס: מעודד כמות גדולה של נקודות בצורה מתונה (Log scale)
+                % הוספנו +1 כדי שגם עבור מעט נקודות זה לא יאפס את הציון
+                quantityFactor = 1 + log10(numGoodMatches); 
+                
+                % הציון הסופי:
+                % avgQuality * numGoodMatches = הסכום האפקטיבי של הנקודות הטובות
+                % כפול ה-quantityFactor נותן בונוס על אמינות סטטיסטית
+                % כפול 2.5 כדי להביא את המספרים לטווח דומה למה שהוגדר ב-CONFIG (סביב 10-20 להצלחה)
+                currentScore = (avgQuality * numGoodMatches) * quantityFactor * 2.5;
                 
                 if currentScore > bestScore
                     bestScore = currentScore;
@@ -995,611 +1467,8 @@ end
 
 
 % ========================================================================
-% FILENAME: get_config.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
-% ========================================================================
-
-function cfg = get_config()
-    % get_config - קובץ הגדרות מרכזי (גרסה מתוקנת)
-    
-    %% 1. הגדרות מערכת וקבצים
-    cfg.db_filename = 'fingerprint_database.mat';
-    
-    %% 2. הגדרות Gabor (שיפור תמונה מתקדם)
-    cfg.gabor.blk_sze = 16;       % גודל בלוק לסגמנטציה
-    cfg.gabor.thresh = 0.1;       % סף שונות להפרדת רקע
-    cfg.gabor.grad_sigma = 1;     % סיגמא לחישוב נגזרות כיוון
-    cfg.gabor.block_sigma = 7;    % סיגמא להחלקת כיוונים
-    cfg.gabor.smooth_sigma = 7;   % החלקה סופית של שדה הכיוונים
-    cfg.gabor.freq_blk = 38;      % גודל בלוק לחישוב תדר
-    cfg.gabor.freq_wind = 5;      % חלון חישוב תדר
-    cfg.gabor.min_wl = 5;         % אורך גל מינימלי
-    cfg.gabor.max_wl = 15;        % אורך גל מקסימלי
-    cfg.gabor.kx = 0.65;          % חוזק הסינון בציר X
-    cfg.gabor.ky = 0.65;          % חוזק הסינון בציר Y
-    
-    %% 3. הגדרות עיבוד המשך ובינאריזציה
-    cfg.binarize.sens = 0.5;      
-    
-    %% 4. הגדרות רישום ובקרת איכות (Enrollment)
-    cfg.enroll.min_minutiae = 12; % מינימום נקודות לרישום
-    
-    %% 5. הגדרות מסיכה ועיבוד מקדים
-    cfg.roi.erosion_size = 0;   
-    cfg.roi.closing_size = 20;  
-    
-    cfg.preprocess.gauss_sigma = 0.8;       
-    cfg.preprocess.bin_sensitivity = 0.65;  
-    
-    %% 6. חילוץ מאפיינים
-    cfg.feature.descriptor_k = 5;   
-    cfg.feature.angle_steps = 5;    
-    
-    %% 7. הגדרות סינון (Filtering)
-    cfg.filter.border_margin = 25; 
-    cfg.filter.min_distance = 20;  
-    
-    % סינון גיאומטרי
-    cfg.filter.max_short_ridge_dist = 15; 
-    cfg.filter.max_bridge_dist = 12; 
-    cfg.filter.max_spike_dist = 8;
-    cfg.filter.angle_tolerance = deg2rad(35);
-    
-    %% 8. הגדרות התאמה (Matching)
-    cfg.match.pass_threshold = 12.0;    
-    cfg.match.candidate_count = 50;     
-    
-    cfg.match.max_dist = 15;            
-    cfg.match.max_ang_deg = 45;         
-    cfg.match.max_ang_rad = deg2rad(cfg.match.max_ang_deg);
-    
-    %% 9. הגדרות ניקוד (Scoring)
-    cfg.score.sigma_dist = 10;     
-    cfg.score.sigma_ang_rad = 0.5; 
-    cfg.score.sigma_desc = 45;     
-end
-
-
-
-% ========================================================================
-% FILENAME: get_roi_mask.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
-% ========================================================================
-
-function mask = get_roi_mask(img)
-    % get_roi_mask - מחזירה מסיכה מלאה ואטומה (ללא כרסום)
-    
-    cfg = get_config();
-    
-    % 1. זיהוי טקסטורה
-    textureMap = rangefilt(img);
-    level = graythresh(textureMap);
-    mask = imbinarize(textureMap, level);
-    
-    % 2. חיבור וסגירה
-    % שימוש בערך גדול (20) כדי לאחד את כל הפסים לגוש אחד
-    seClose = strel('disk', cfg.roi.closing_size); 
-    mask = imclose(mask, seClose);
-    
-    % 3. מילוי חורים (קריטי לחישוב מרחק תקין)
-    mask = imfill(mask, 'holes');
-    
-    % 4. ניקוי רעשי רקע (השארת הגוש הגדול בלבד)
-    mask = bwareafilt(mask, 1);
-    
-    mask = logical(mask);
-end
-
-
-
-% ========================================================================
-% FILENAME: process_fingerprint.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
-% ========================================================================
-
-function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img, do_viz)
-    % process_fingerprint - גרסה משודרגת עם שיפור Gabor
-    % קלט: תמונה גולמית (צבעונית או אפורה)
-    % פלט: תבנית נקודות מסוננת, מסיכה, נקודות גולמיות, ודסקריפטורים
-    
-    if nargin < 2, do_viz = false; end
-    cfg = get_config();
-    
-    % מבנה לדיבוג
-    debug = struct();
-    
-    % 1. המרה לאפור ונרמול
-    if size(img, 3) == 3, img = rgb2gray(img); end
-    img = im2double(img);
-    debug.imgGray = img;
-    
-    % --- שלב השיפור החדש (Gabor Enhancement) ---
-    
-    % 2. סגמנטציה (הפרדת האצבע מהרקע)
-    [normim, mask, ~] = ridgesegment(img, cfg.gabor.blk_sze, cfg.gabor.thresh);
-    roiMask = mask; % שומרים את המסיכה המדויקת שחושבה כאן
-    debug.roiMask = roiMask;
-    
-    % 3. חישוב כיוונים (Orientation Map)
-    orientim = ridgeorient(normim, cfg.gabor.grad_sigma, cfg.gabor.block_sigma, cfg.gabor.smooth_sigma);
-    
-    % 4. חישוב תדרים (Frequency Map)
-    [freqim, ~] = ridgefreq(normim, mask, orientim, cfg.gabor.freq_blk, ...
-                            cfg.gabor.freq_wind, cfg.gabor.min_wl, cfg.gabor.max_wl);
-    
-    % 5. שיפור תמונה (Gabor Filtering)
-    % התמונה הזו חלקה וברורה הרבה יותר מהמקור
-    enhancedImg = ridgefilter(normim, orientim, freqim, cfg.gabor.kx, cfg.gabor.ky, 0);
-    
-    % 6. בינאריזציה וניקוי
-    % פלט גאבור הוא סביב ה-0. ערכים > 0 הם רכסים.
-    binaryImg = enhancedImg > 0;
-    binaryImg = binaryImg & roiMask; % חיתוך לפי המסיכה
-    
-    % ניקוי חורים קטנים שנוצרו (אופציונלי אך מומלץ)
-    binaryImg = bwareaopen(binaryImg, 10);
-    binaryImg = ~bwareaopen(~binaryImg, 10);
-    
-    debug.binaryMasked = binaryImg;
-    
-    % 7. יצירת שלד (Skeletonization)
-    skeletonImg = bwmorph(binaryImg, 'thin', Inf);
-    skeletonImg = bwmorph(skeletonImg, 'clean');
-    skeletonImg = bwmorph(skeletonImg, 'diag');
-    skeletonImg = bwmorph(skeletonImg, 'spur', 5); 
-    
-    debug.skeletonImg = skeletonImg;
-    
-    % --- שלב חילוץ המאפיינים (כמו בקוד הקודם) ---
-    
-    % 8. חילוץ נקודות (Minutiae) מהשלד הנקי
-    rawMinutiae = extract_minutiae_features(skeletonImg, cfg);
-    debug.rawMinutiae = rawMinutiae;
-    
-    % 9. סינון סופי (שוליים, צפיפות, מבנה)
-    template = filter_minutiae(rawMinutiae, roiMask, cfg);
-    debug.finalTemplate = template;
-    
-    % 10. חישוב מתארים (Descriptors)
-    descriptors = compute_descriptors(template, cfg);
-    
-    % --- ויזואליזציה ---
-    if do_viz
-        visualize_pipeline(debug, cfg);
-    end
-end
-
-
-
-% ========================================================================
-% FILENAME: process_fingerprint_gabor.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
-% ========================================================================
-
-function [skeletonImg, binaryImg, enhancedImg] = process_fingerprint_gabor(img)
-    % process_fingerprint_gabor - עיבוד מלא כולל שיפור גאבור
-    % מחזיר את השלד, הבינארי והתמונה המשופרת
-    
-    cfg = get_config();
-    
-    % 1. המרה לאפור ונרמול
-    if size(img, 3) == 3
-        img = rgb2gray(img);
-    end
-    img = im2double(img);
-    
-    % 2. סגמנטציה
-    [normim, mask, ~] = ridgesegment(img, cfg.gabor.blk_sze, cfg.gabor.thresh);
-    
-    % 3. חישוב כיוונים
-    orientim = ridgeorient(normim, cfg.gabor.grad_sigma, cfg.gabor.block_sigma, cfg.gabor.smooth_sigma);
-    
-    % 4. חישוב תדרים
-    [freqim, ~] = ridgefreq(normim, mask, orientim, cfg.gabor.freq_blk, ...
-                            cfg.gabor.freq_wind, cfg.gabor.min_wl, cfg.gabor.max_wl);
-    
-    % 5. סינון גאבור (שיפור)
-    enhancedImg = ridgefilter(normim, orientim, freqim, cfg.gabor.kx, cfg.gabor.ky, 0);
-    
-    % 6. בינאריזציה וניקוי
-    % פלט גאבור הוא סביב ה-0. גדול מ-0 זה רכס (או להיפך, תלוי במימוש, כאן זה >0)
-    binaryImg = enhancedImg > 0;
-    binaryImg = binaryImg & mask; % חיתוך לפי המסכה המקורית
-    
-    % 7. יצירת שלד (Skeletonization)
-    skeletonImg = bwmorph(binaryImg, 'thin', Inf);
-    skeletonImg = bwmorph(skeletonImg, 'clean');
-    skeletonImg = bwmorph(skeletonImg, 'diag');
-    skeletonImg = bwmorph(skeletonImg, 'spur', 5); % ניקוי זיפים
-    
-    % היפוך צבעים (שחור על לבן) אם צריך, או השארת לוגי (1=רכס)
-    % בד"כ בויזואליזציה רוצים שחור=רכס, אבל לאלגוריתם צריך 1=רכס.
-    % כאן נחזיר 1=רכס. במידת הצורך נהפוך בסקריפט הראשי.
-end
-
-
-
-% ========================================================================
-% FILENAME: ridgefilter.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
-% ========================================================================
-
-% =========================================================================
-% RIDGEFILTER - שיפור התמונה בעזרת מסנן גאבור (Gabor Filter)
-% =========================================================================
-% תפקיד הפונקציה בפועל:
-% זהו "המנוע" של המערכת. הפונקציה בונה מסנן ייחודי לכל פיקסל בתמונה,
-% בהתבסס על:
-% 1. הכיוון שלו (מ-ridgeorient)
-% 2. העובי שלו (מ-ridgefreq)
-%
-% הפעולה שהיא מבצעת:
-% היא "מורחת" את הפיקסלים *רק* לאורך כיוון הרכס.
-% התוצאה: "חורים" ונתקים בתוך הרכס מתמלאים (נסגרים),
-% ורעש שנמצא בין הרכסים (בעמקים) נמחק.
-%
-% פלט: תמונה משופרת ונקייה, מוכנה לבינאריזציה ודיקוק.
-% =========================================================================
-
-
-function [newim] = ridgefilter(im, orient, freq, kx, ky, showfilter)
-% RIDGEFILTER - Enhances fingerprint image via oriented filters
-%
-% Usage: [newim] = ridgefilter(im, orient, freq, kx, ky, showfilter)
-%
-% Arguments:  im         - Image to be processed.
-%             orient     - Ridge orientation image.
-%             freq       - Ridge frequency image.
-%             kx, ky     - Scale factors specifying the filter sigma relative
-%                          to the wavelength of the filter (suggest 0.5).
-%             showfilter - An optional flag 0/1.  If set to 1 the code will
-%                          display the filter being created.
-%
-% Returns:    newim      - The enhanced image.
-
-    if nargin == 5; showfilter = 0; end
-    
-    angleInc = 3;  % Fixed angle increment between filter orientations in degrees
-    im = double(im);
-    [rows, cols] = size(im);
-    newim = zeros(rows,cols);
-    
-    % Round the array of frequencies to the nearest 0.01 to reduce the
-    % number of distinct frequencies we have to generate filters for.
-    freq_1d = freq(:);
-    ind = find(freq_1d > 0);
-    freq_1d(ind) = round(freq_1d(ind)*100)/100;
-    unifreqs = unique(freq_1d(ind));
-    
-    % Generate filters corresponding to these distinct frequencies and
-    % orientations in 'angleInc' increments.
-    sigmax = 0; sigmay = 0;
-    sze = zeros(length(unifreqs),1);
-    filters = cell(length(unifreqs), 180/angleInc);
-    
-    for k = 1:length(unifreqs)
-        sigmax = kx/unifreqs(k);
-        sigmay = ky/unifreqs(k);
-        sze(k) = round(3*max(sigmax,sigmay));
-        [x,y] = meshgrid(-sze(k):sze(k));
-        reffilter = exp(-(x.^2/sigmax^2 + y.^2/sigmay^2)/2)...
-                    .*cos(2*pi*unifreqs(k)*x);
-        
-        % Generate rotated versions of the filter
-        for o = 1:180/angleInc
-            filters{k,o} = imrotate(reffilter, -(o*angleInc+90), 'bilinear', 'crop'); 
-        end
-    end
-
-    % Apply the filters to the image
-    % Find indices of matrix points greater than maxsze from the image boundary
-    maxsze = sze(1);
-    finalind = find(freq>0);
-    
-    % Convert orientation matrix values from radians to an index value
-    % that corresponds to round(degrees/angleInc)
-    maxorientindex = round(180/angleInc);
-    orientindex = round(orient/pi*180/angleInc);
-    i = find(orientindex < 1);   orientindex(i) = orientindex(i)+maxorientindex;
-    i = find(orientindex > maxorientindex); orientindex(i) = orientindex(i)-maxorientindex; 
-    
-    % Filter the image
-    for k = 1:length(unifreqs)
-        thisfreq = unifreqs(k);
-        
-        % Find where this frequency occurs in the image
-        freqind = find(freq_1d == thisfreq);
-        
-        % Iterate through the orientation indices
-        for o = 1:180/angleInc
-            ind = intersect(freqind, find(orientindex(:)==o));
-             
-            if ~isempty(ind)
-                % Extract the relevant filter
-                filter = filters{k,o};
-                
-                % Get row and col indices
-                [r, c] = ind2sub([rows,cols], ind);
-                
-                % Apply filter to these pixels (valid boundary check required in loops)
-                % Simplification for speed: Block processing or full convolution 
-                % is usually done here. For pixel-wise efficiency:
-                 
-                 r_valid = r(r>sze(k) & r<rows-sze(k) & c>sze(k) & c<cols-sze(k));
-                 c_valid = c(r>sze(k) & r<rows-sze(k) & c>sze(k) & c<cols-sze(k));
-                 
-                 % Note: This loop can be slow in MATLAB. A faster way is using
-                 % block processing, but this is the explicit implementation.
-                 for i = 1:length(r_valid)
-                     blk = im(r_valid(i)-sze(k):r_valid(i)+sze(k), c_valid(i)-sze(k):c_valid(i)+sze(k));
-                     newim(r_valid(i),c_valid(i)) = sum(sum(blk.*filter));
-                 end
-            end
-        end
-    end
-end
-
-
-
-% ========================================================================
-% FILENAME: ridgefreq.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
-% ========================================================================
-
-% =========================================================================
-% RIDGEFREQ - חישוב תדירות הרכסים (Ridge Frequency)
-% =========================================================================
-% תפקיד הפונקציה בפועל:
-% הפונקציה מודדת כמה "צפופים" הקווים בטביעת האצבע.
-% היא לוקחת בלוקים מהתמונה, מסובבת אותם כך שהקווים יהיו אנכיים,
-% ואז סופרת כמה פיקסלים יש בין פס שחור אחד לשני (אורך גל).
-%
-% למה זה קריטי?
-% כדי שמסנן גאבור יידע איזה "רוחב" של מכחול הוא צריך כדי לצייר מחדש את הקווים.
-% אם המסנן יהיה רחב מדי - הוא יחבר שני קווים סמוכים.
-% אם הוא יהיה צר מדי - הוא לא יצליח לסגור חורים בתוך הקו.
-%
-% קלט: תמונה, מסכה, ומפת כיוונים.
-% פלט: מפה של תדרים (1 חלקי המרחק בין הרכסים).
-% =========================================================================
-
-
-
-function [freqim, medianfreq] = ridgefreq(im, mask, orientim, blksze, windsze, ...
-                                             minWaveLength, maxWaveLength)
-% RIDGEFREQ - Estimates the local ridge frequency across a fingerprint
-%
-% Usage: [freqim, medianfreq] = ridgefreq(im, mask, orientim, blksze, windsze, ...
-%                                         minWaveLength, maxWaveLength)
-%
-% Arguments:  im       - Image to be processed.
-%             mask     - Mask defining ridge regions.
-%             orientim - Ridge orientation image.
-%             blksze   - Size of image block to use (say 32).
-%             windsze  - Window length used to identify peaks (say 5).
-%             minWaveLength,  maxWaveLength - Minimum and maximum ridge
-%                             wavelengths, in pixels (say 5 and 15).
-%
-% Returns:    freqim     - An image  the same size as im with  values set to
-%                          the estimated ridge spatial frequency.
-%             medianfreq - Median frequency value evaluated across the
-%                          fingerprint.
-
-    [rows, cols] = size(im);
-    freqim = zeros(rows, cols);
-    
-    for r = 1:blksze:rows-blksze+1
-        for c = 1:blksze:cols-blksze+1
-            blkim = im(r:r+blksze-1, c:c+blksze-1);
-            blkor = orientim(r:r+blksze-1, c:c+blksze-1);
-            
-            freq = freqest(blkim, blkor, windsze, minWaveLength, maxWaveLength);
-            freqim(r:r+blksze-1, c:c+blksze-1) = freq;
-        end
-    end
-    
-    % Mask out frequencies calculated for non-ridge regions
-    freqim = freqim .* mask;
-    
-    % Generate median frequency
-    medianfreq = median(freqim(freqim > 0));
-end
-
-% פונקציית עזר פנימית לחישוב תדר בבלוק בודד
-function freq = freqest(im, orientim, windsze, minWaveLength, maxWaveLength)
-    [rows, cols] = size(im);
-    
-    % Find mean orientation within the block
-    cosorient = mean(cos(2*orientim(:)));
-    sinorient = mean(sin(2*orientim(:)));
-    orient = atan2(sinorient, cosorient)/2;
-    
-    % Rotate the image block so that the ridges are vertical
-    rotim = imrotate(im, orient/pi*180 + 90, 'bicubic', 'crop');
-    
-    % Sum down the columns to get a projection of the grey values
-    proj = sum(rotim);
-    
-    % Find peaks in projected grey values
-    dilation = ordfilt2(proj, windsze, ones(1,windsze));
-    maxpts = (dilation == proj) & (proj > mean(proj));
-    maxind = find(maxpts);
-    
-    % Determine spatial frequency of ridges
-    if length(maxind) < 2
-        freq = 0;
-    else
-        NoOfPeaks = length(maxind);
-        waveLength = (maxind(end) - maxind(1)) / (NoOfPeaks - 1);
-        if waveLength >= minWaveLength && waveLength <= maxWaveLength
-            freq = 1/waveLength;
-        else
-            freq = 0;
-        end
-    end
-end
-
-
-
-% ========================================================================
-% FILENAME: ridgeorient.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
-% ========================================================================
-
-% =========================================================================
-% RIDGEORIENT - חישוב מפת כיוונים (Orientation Map)
-% =========================================================================
-% תפקיד הפונקציה בפועל:
-% הפונקציה עוברת על כל נקודה בתמונה ומחשבת את ה"זווית" של הרכס באותו מקום.
-% היא משתמשת בנגזרות (Gradients) כדי להבין לאן הקו "זורם".
-%
-% למה זה קריטי?
-% מסנן גאבור (בשלב הבא) חייב לדעת את הזווית הזו כדי להחליק את התמונה
-% *עם* כיוון הקו (כדי לחבר שברים) ולא *נגד* כיוון הקו (שזה ימרח אותו).
-%
-% קלט: תמונה מנורמלת (מ-ridgesegment).
-% פלט: מטריצה באותו גודל כמו התמונה, המכילה זוויות (ברדיאנים) לכל פיקסל.
-% =========================================================================
-
-
-
-function [orientim] = ridgeorient(im, gradientsigma, blocksigma, orientsmoothsigma)
-% RIDGEORIENT - Estimates the local orientation of ridges in a fingerprint
-%
-% Usage:  [orientim] = ridgeorient(im, gradientsigma, blocksigma, ...
-%                                    orientsmoothsigma)
-%
-% Arguments:  im                - A normalised input image.
-%             gradientsigma     - Sigma of the derivative of Gaussian
-%                                 used to compute image gradients.
-%             blocksigma        - Sigma of the Gaussian weighting used to
-%                                 sum the gradient moments.
-%             orientsmoothsigma - Sigma of the Gaussian used to smooth
-%                                 the final orientation vector field.
-% 
-% Returns:    orientim          - The orientation image in radians.
-%                                 Orientation values are between 0 and pi.
-
-    [rows, cols] = size(im);
-    
-    % Calculate image gradients.
-    sze = fix(6*gradientsigma);   if ~mod(sze,2); sze = sze+1; end
-    f = fspecial('gaussian', sze, gradientsigma); % Generate Gaussian filter.
-    [fx, fy] = gradient(f);                       % Gradient of Gausian.
-    
-    Gx = imfilter(im, fx, 'symmetric', 'conv');
-    Gy = imfilter(im, fy, 'symmetric', 'conv');
-    
-    % Estimate the local ridge orientation at each point by finding the
-    % principal axis of variation in the image gradients.
-    Gxx = Gx.^2;       % Covariance data for the image gradients
-    Gxy = Gx.*Gy;
-    Gyy = Gy.^2;
-    
-    % Now smooth the covariance data to perform a weighted summation of the
-    % data.
-    sze = fix(6*blocksigma);   if ~mod(sze,2); sze = sze+1; end
-    f = fspecial('gaussian', sze, blocksigma);
-    Gxx = imfilter(Gxx, f, 'symmetric', 'conv');
-    Gxy = 2*imfilter(Gxy, f, 'symmetric', 'conv');
-    Gyy = imfilter(Gyy, f, 'symmetric', 'conv');
-    
-    % Analytic solution of principal direction
-    denom = sqrt(Gxy.^2 + (Gxx - Gyy).^2) + eps;
-    sin2theta = Gxy./denom;            % Sine and cosine of doubled angles
-    cos2theta = (Gxx - Gyy)./denom;
-    
-    % Smooth the orientation vector field using a low pass filter
-    if orientsmoothsigma
-        sze = fix(6*orientsmoothsigma);   if ~mod(sze,2); sze = sze+1; end
-        f = fspecial('gaussian', sze, orientsmoothsigma);
-        cos2theta = imfilter(cos2theta, f, 'symmetric', 'conv');
-        sin2theta = imfilter(sin2theta, f, 'symmetric', 'conv');
-    end
-    
-    % Calculate the orientation angle
-    orientim = pi/2 + atan2(sin2theta, cos2theta)/2;
-end
-
-
-
-% ========================================================================
-% FILENAME: ridgesegment.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
-% ========================================================================
-
-function [normim, mask, maskind] = ridgesegment(im, blksze, thresh)
-% =========================================================================
-% RIDGESEGMENT - הפרדת טביעת האצבע מהרקע (Segmentation)
-% =========================================================================
-% תפקיד הפונקציה בפועל:
-% 1. נרמול התמונה: מאזנת את הבהירות והניגודיות כדי שהחישובים יהיו אחידים.
-% 2. חישוב שונות (Variance): מחלקת את התמונה לבלוקים (למשל 16x16).
-%    - אם השונות בבלוק גבוהה -> יש שם קווים (רכסים) -> זה חלק מהאצבע.
-%    - אם השונות נמוכה -> האזור חלק -> זה רקע ריק.
-% 3. יצירת מסכה (Mask): מחזירה מפה של 0 ו-1 שאומרת לנו איפה האצבע נמצאת.
-%
-% קלט: תמונה גולמית.
-% פלט: תמונה מנורמלת + מסכה (Mask) שמחקה את הרקע המיותר.
-% =========================================================================
-
-    
-    im = double(im);
-    [rows, cols] = size(im);  
-    
-    % 1. נרמול ראשוני
-    im = (im - mean(im(:))) / std(im(:));
-    
-    % 2. חישוב שונות לכל בלוק (זיהוי אזורי האצבע)
-    stddevim = zeros(rows,cols);
-    for r = 1:blksze:rows-blksze+1
-        for c = 1:blksze:cols-blksze+1
-            block = im(r:r+blksze-1, c:c+blksze-1);
-            stddevim(r:r+blksze-1, c:c+blksze-1) = std(block(:));
-        end
-    end
-    
-    % 3. יצירת מסיכה (1=אצבע, 0=רקע)
-    mask = stddevim > thresh;
-    
-    % --- תוספת חדשה: חיתוך השוליים (Cropping) ---
-    % אנו בודקים אלו שורות ועמודות מכילות מידע (1)
-    rows_with_data = any(mask, 2);
-    cols_with_data = any(mask, 1);
-    
-    % מציאת הגבולות (האינדקס הראשון והאחרון שיש בו אצבע)
-    r1 = find(rows_with_data, 1, 'first');
-    r2 = find(rows_with_data, 1, 'last');
-    c1 = find(cols_with_data, 1, 'first');
-    c2 = find(cols_with_data, 1, 'last');
-    
-    % ביצוע החיתוך בפועל (רק אם נמצא מידע)
-    if ~isempty(r1) && ~isempty(c1)
-        % הוספת "ריפוד" קטן של 2 פיקסלים שלא יהיה צפוף מדי (אופציונלי)
-        padding = 2;
-        r1 = max(1, r1 - padding); r2 = min(rows, r2 + padding);
-        c1 = max(1, c1 - padding); c2 = min(cols, c2 + padding);
-        
-        % חיתוך התמונה והמסיכה
-        im = im(r1:r2, c1:c2);
-        mask = mask(r1:r2, c1:c2);
-    end
-    % ---------------------------------------------
-    
-    % 4. נרמול סופי (מבוסס רק על אזור האצבע החתוך)
-    maskind = find(mask);
-    if ~isempty(maskind)
-        im = (im - mean(im(maskind))) / std(im(maskind));
-    end
-    
-    normim = im;
-end
-
-
-
-% ========================================================================
 % FILENAME: transform_minutiae.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\03_Matching
 % ========================================================================
 
 function transformedList = transform_minutiae(minutiaeList, dTheta, dX, dY)
@@ -1637,8 +1506,47 @@ end
 
 
 % ========================================================================
+% FILENAME: add_user_to_db.m
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\04_Database
+% ========================================================================
+
+function add_user_to_db(fname, name, dataStruct, path)
+    % add_user_to_db - מוסיפה משתמש חדש לקובץ הנתונים
+    % Inputs:
+    %   fname:      שם קובץ ה-MAT של המאגר
+    %   name:       שם המשתמש להוספה
+    %   dataStruct: מבנה המכיל minutiae ו-descriptors
+    %   path:       נתיב התמונה המקורית (לרפרנס)
+    
+    if isfile(fname)
+        load(fname, 'fingerprintDB');
+        % בדיקת תאימות לאחור (הוספת שדה חסר אם צריך)
+        if ~isfield(fingerprintDB, 'descriptors')
+             [fingerprintDB(:).descriptors] = deal([]); 
+        end
+    else
+        % יצירת מאגר חדש אם לא קיים
+        fingerprintDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {});
+    end
+    
+    % יצירת רשומה חדשה
+    newEntry.name = name;
+    newEntry.template = dataStruct.minutiae;       
+    newEntry.descriptors = dataStruct.descriptors; 
+    newEntry.imagePath = path;
+    
+    % הוספה למערך ושמירה
+    fingerprintDB(end+1) = newEntry;
+    save(fname, 'fingerprintDB');
+    
+    msgbox(['המשתמש ' name ' נשמר בהצלחה!'], 'אישור');
+end
+
+
+
+% ========================================================================
 % FILENAME: visualize_match_result.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\05_Visualization
 % ========================================================================
 
 function visualize_match_result(img, dbTemp, alignedInput, name, score)
@@ -1685,7 +1593,7 @@ end
 
 % ========================================================================
 % FILENAME: visualize_pipeline.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\05_Visualization
 % ========================================================================
 
 function visualize_pipeline(data, cfg)

@@ -1,5 +1,5 @@
 function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData, inputData, manualThreshold)
-    % find_best_match - השוואה גיאומטרית וחישוב ציון התאמה משוקלל
+    % find_best_match - השוואה גיאומטרית וחישוב ציון התאמה משוקלל (Optimized)
     
     T_pts = templateData.minutiae;
     T_desc = templateData.descriptors;
@@ -56,6 +56,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
         alignedAng = mod(I_pts(:,4) + dTheta + pi, 2*pi) - pi;
         
         % מציאת השכן הקרוב ביותר במאגר לכל נקודה מיושרת
+        % (אופטימיזציה קטנה: אין צורך במטריצה מלאה, עושים שורה שורה)
         dists = zeros(NI, 1);
         idx = zeros(NI, 1);
         RefCoords = T_pts(:, 1:2);
@@ -83,6 +84,7 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
             goodMatches = (angDiffs < angThr) & typeMatch;
             numGoodMatches = sum(goodMatches);
             
+            % דרושות לפחות 3 התאמות חזקות (כולל זווית וסוג) כדי לחשב ניקוד
             if numGoodMatches >= 3
                 % --- חישוב הציון המשופר ---
                 
@@ -95,15 +97,22 @@ function [finalScore, bestAlignedInput, isMatch] = find_best_match(templateData,
                 descScore = sum(exp(-descVals.^2 / (2*sigmaDesc^2)));
                 
                 % 3. שקלול סופי:
-                % avgQuality: כמה המבנה תואם (0 עד 1)
+                % avgQuality: מדד בין 0 ל-1 שמייצג כמה ה"פיט" (Fit) מדויק
                 avgQuality = (geomScore + descScore) / (2 * numGoodMatches);
                 
-                % matchRatio: כמה אחוז מהאצבע הצלחנו להתאים
-                matchRatio = numGoodMatches / min(NI, NT);
+                % === השינוי בנוסחה ===
+                % הנוסחה הישנה הסתמכה על matchRatio שהעניש חיתוכים חלקיים.
+                % הנוסחה החדשה: (איכות * כמות) * פקטור לוגריתמי
                 
-                % הנוסחה הסופית: מענישה אי-התאמות ומתגמלת כמות גבוהה של נקודות
-                % הפקטור (numGoodMatches/5) מעלה את הציון ככל שיש יותר הוכחות
-                currentScore = (avgQuality * matchRatio^2) * 100 * (numGoodMatches / 5);
+                % פקטור בונוס: מעודד כמות גדולה של נקודות בצורה מתונה (Log scale)
+                % הוספנו +1 כדי שגם עבור מעט נקודות זה לא יאפס את הציון
+                quantityFactor = 1 + log10(numGoodMatches); 
+                
+                % הציון הסופי:
+                % avgQuality * numGoodMatches = הסכום האפקטיבי של הנקודות הטובות
+                % כפול ה-quantityFactor נותן בונוס על אמינות סטטיסטית
+                % כפול 2.5 כדי להביא את המספרים לטווח דומה למה שהוגדר ב-CONFIG (סביב 10-20 להצלחה)
+                currentScore = (avgQuality * numGoodMatches) * quantityFactor * 2.5;
                 
                 if currentScore > bestScore
                     bestScore = currentScore;

@@ -31,7 +31,9 @@ for k = 1:totalFiles
         img = imread(fullPath);
         
         % הפונקציה הזו מחליפה את הסקריפט של פייתון + העיבוד הקודם
-        [skeletonMask, ~, enhancedImg] = process_fingerprint_gabor(img);
+        [~, ~, ~, ~, debugData] = process_fingerprint(img, false);
+        skeletonMask = debugData.skeletonImg;
+        enhancedImg  = debugData.enhancedImg;
         
         % --- שמירה ---
         % שמירת השלד (נהפוך צבעים אם צריך שחור על גבי לבן ל-PNG)

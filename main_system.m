@@ -4,7 +4,7 @@
 clc; clear; close all;
 
 % --- 1. הגדרת נתיבים ---
-addpath(genpath('src')); 
+addpath(genpath('src'));
 addpath('data');         
 
 % --- 2. הגדרות מערכת ---
@@ -13,7 +13,31 @@ dbFileName = cfg.db_filename;
 PASS_THRESHOLD = cfg.match.pass_threshold;
 minPointsEnroll = cfg.enroll.min_minutiae; 
 
+% --- 3. ניהול זיכרון (Optimization) ---
+% נחזיק את המאגר בזיכרון במקום לטעון אותו כל פעם מחדש
+fingerprintDB = []; 
+db_needs_reload = true; % דגל שמסמן אם צריך לטעון את המאגר מחדש
+
 while true
+    %% טעינת מאגר חכמה (רק אם צריך)
+    if db_needs_reload && isfile(dbFileName)
+        try
+            loadedData = load(dbFileName, 'fingerprintDB');
+            if isfield(loadedData, 'fingerprintDB')
+                fingerprintDB = loadedData.fingerprintDB;
+            else
+                fingerprintDB = [];
+            end
+            db_needs_reload = false; % המאגר מעודכן, מכבים את הדגל
+            disp('>> המאגר נטען/עודכן בהצלחה לזיכרון.');
+        catch
+            warning('שגיאה בטעינת קובץ המאגר.');
+            fingerprintDB = [];
+        end
+    elseif ~isfile(dbFileName)
+        fingerprintDB = [];
+    end
+
     %% תפריט ראשי
     choice = menu('מערכת ביומטרית - תפריט ראשי', ...
                   '1. רישום משתמש בודד (Single Enrollment)', ...
@@ -44,6 +68,7 @@ while true
         try
             currentImg = imread(fullPath);
             disp('>> מעבד תמונה...');
+            % שימוש בפונקציה המאוחדת החדשה
             [template, ~, ~, descriptors] = process_fingerprint(currentImg); 
             
             if size(template, 1) < minPointsEnroll
@@ -68,14 +93,17 @@ while true
             name = inputdlg('הכנס שם משתמש:', 'רישום');
             if ~isempty(name) && ~isempty(name{1})
                 add_user_to_db(dbFileName, name{1}, currentData, fullPath);
+                
+                % עדכון הדגל: ביצענו שינוי בדיסק, צריך לטעון מחדש בסיבוב הבא
+                db_needs_reload = true; 
             end
             
         % === 2. זיהוי בודד ===
         case 2
-            if ~isfile(dbFileName)
-                msgbox('המאגר ריק.', 'שגיאה', 'error'); continue;
+            if isempty(fingerprintDB)
+                msgbox('המאגר ריק או לא נטען.', 'שגיאה', 'error'); continue;
             end
-            load(dbFileName, 'fingerprintDB');
+            % כאן לא עושים load, משתמשים ב-fingerprintDB מהזיכרון
             
             bestScore = 0;
             bestName = 'לא ידוע';
@@ -136,13 +164,16 @@ while true
             end
             close(wb);
             msgbox(['נוספו ' num2str(successCount) ' משתמשים.'], 'סיום');
+            
+            % עדכון הדגל: המאגר בדיסק השתנה
+            db_needs_reload = true;
 
         % === 4. זיהוי המוני + חישוב אחוזי הצלחה ===
         case 4
-            if ~isfile(dbFileName)
-                msgbox('המאגר ריק.', 'שגיאה', 'error'); continue;
+            if isempty(fingerprintDB)
+                msgbox('המאגר ריק או לא נטען.', 'שגיאה', 'error'); continue;
             end
-            load(dbFileName, 'fingerprintDB');
+            % כאן לא עושים load, חוסכים זמן רב!
             
             [files, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Fingerprint Files'}, ...
                                       'בחר תמונות לבדיקה', 'data/', 'MultiSelect', 'on');
@@ -153,24 +184,22 @@ while true
             wb = waitbar(0, 'מבצע זיהוי המוני...');
             
             correctCount = 0;
-            validCount = 0; % סופר רק תמונות שהצלחנו לעבד
+            validCount = 0; 
             
             for k = 1:length(files)
                 waitbar(k/length(files), wb, sprintf('בודק: %s...', files{k}));
                 thisFile = files{k};
                 fullPath = fullfile(path, thisFile);
                 
-                % --- חילוץ "הזהות האמיתית" משם הקובץ (Ground Truth) ---
+                % --- חילוץ "הזהות האמיתית" משם הקובץ ---
                 [~, fNameNoExt, ~] = fileparts(thisFile);
                 parts = strsplit(fNameNoExt, '_');
-                realID = parts{1}; % לוקח את החלק הראשון (למשל '101' מתוך '101_8')
+                realID = parts{1}; 
                 
                 try
                     img = imread(fullPath);
                     [template, ~, ~, descriptors] = process_fingerprint(img);
                     
-                    % דילוג על תמונות גרועות (לא נכנסות לסטטיסטיקה או נחשבות כישלון, לבחירתך)
-                    % כאן נסמן כ"איכות נמוכה" ולא נספור באחוזים
                     if size(template, 1) < minPointsEnroll
                         results{end+1, 1} = thisFile;
                         results{end, 2} = realID;
@@ -182,7 +211,7 @@ while true
                     
                     validCount = validCount + 1;
                     
-                    % חיפוש במאגר
+                    % חיפוש במאגר (שנמצא בזיכרון)
                     bestScore = 0;
                     bestMatchName = 'לא זוהה';
                     
@@ -205,8 +234,7 @@ while true
                         end
                     end
                     
-                    % --- בדיקת הצלחה (Success Check) ---
-                    % מחלצים גם את ה-ID מהשם שנמצא במאגר (למקרה שגם הוא 101_1)
+                    % בדיקת הצלחה
                     matchParts = strsplit(bestMatchName, '_');
                     matchID = matchParts{1};
                     
@@ -217,12 +245,11 @@ while true
                         status = 'X שגיאה';
                     end
                     
-                    % שמירה לטבלה
-                    results{end+1, 1} = thisFile;      % קובץ
-                    results{end, 2} = realID;          % מי זה באמת
-                    results{end, 3} = bestMatchName;   % מי המערכת חשבה שזה
-                    results{end, 4} = bestScore;       % ציון
-                    results{end, 5} = status;          % סטטוס
+                    results{end+1, 1} = thisFile;      
+                    results{end, 2} = realID;          
+                    results{end, 3} = bestMatchName;   
+                    results{end, 4} = bestScore;       
+                    results{end, 5} = status;          
                     
                 catch err
                     results{end+1, 1} = thisFile;
@@ -234,24 +261,22 @@ while true
             end
             close(wb);
             
-            % --- חישוב אחוזי הצלחה ---
+            % חישוב אחוזי הצלחה
             if validCount > 0
                 successRate = (correctCount / validCount) * 100;
             else
                 successRate = 0;
             end
             
-            % --- הצגת התוצאות ---
+            % הצגת התוצאות
             f = figure('Name', 'תוצאות זיהוי וסטטיסטיקה', 'NumberTitle', 'off', ...
                        'Position', [100 100 650 500], 'MenuBar', 'none');
                    
-            % כותרת עם האחוזים
             uicontrol('Style', 'text', 'Parent', f, ...
                       'String', sprintf('אחוזי הצלחה: %.2f%% (%d/%d)', successRate, correctCount, validCount), ...
                       'FontSize', 16, 'FontWeight', 'bold', 'ForegroundColor', 'blue', ...
                       'Position', [20 450 600 30]);
             
-            % הטבלה
             t = uitable(f, 'Data', results, ...
                         'ColumnName', {'שם קובץ', 'זהות אמיתית', 'זוהה כ-', 'ציון', 'סטטוס'}, ...
                         'ColumnWidth', {120, 80, 120, 60, 80}, ...
@@ -259,15 +284,10 @@ while true
             
         % === 5. הצגת המאגר ===
         case 5
-            if isfile(dbFileName)
-                load(dbFileName, 'fingerprintDB');
-                if isempty(fingerprintDB)
-                    msgbox('המאגר קיים אך ריק.');
-                else
-                    listdlg('ListString', {fingerprintDB.name}, 'Name', 'רשימת משתמשים', 'ListSize', [300 400]);
-                end
+            if isempty(fingerprintDB)
+                msgbox('המאגר ריק.');
             else
-                msgbox('אין נתונים.');
+                listdlg('ListString', {fingerprintDB.name}, 'Name', 'רשימת משתמשים', 'ListSize', [300 400]);
             end
     end
 end
