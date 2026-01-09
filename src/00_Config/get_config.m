@@ -12,8 +12,8 @@ function cfg = get_config()
     cfg.gabor.smooth_sigma = 7;   % החלקה סופית של שדה הכיוונים
     cfg.gabor.freq_blk = 30;      % גודל בלוק לחישוב תדר
     cfg.gabor.freq_wind = 5;      % חלון חישוב תדר
-    cfg.gabor.min_wl = 5;         % אורך גל מינימלי
-    cfg.gabor.max_wl = 15;        % אורך גל מקסימלי
+    cfg.gabor.min_wl = 3;         % אורך גל מינימלי
+    cfg.gabor.max_wl = 20;        % אורך גל מקסימלי
     cfg.gabor.kx = 0.65;          % חוזק הסינון בציר X
     cfg.gabor.ky = 0.65;          % חוזק הסינון בציר Y
     
@@ -24,8 +24,8 @@ function cfg = get_config()
     cfg.enroll.min_minutiae = 12; % מינימום נקודות לרישום
     
     %% 5. הגדרות מסיכה ועיבוד מקדים
-    cfg.roi.erosion_size = 0;   
-    cfg.roi.closing_size = 20;  
+    cfg.roi.erosion_size = 10;   
+    cfg.roi.closing_size = 10;  
     
     cfg.preprocess.gauss_sigma = 0.8;       
     cfg.preprocess.bin_sensitivity = 0.65;  
@@ -35,7 +35,7 @@ function cfg = get_config()
     cfg.feature.angle_steps = 5;    
     
     %% 7. הגדרות סינון (Filtering)
-    cfg.filter.border_margin = 25; 
+    cfg.filter.border_margin = 20; 
     cfg.filter.min_distance = 20;  
     
     % סינון גיאומטרי

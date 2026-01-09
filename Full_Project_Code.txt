@@ -564,62 +564,52 @@ end
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
 % ========================================================================
 
-function [template, roiMask, rawMinutiae, descriptors, debug] = process_fingerprint(img, do_viz)
-    % process_fingerprint - גרסה מאוחדת ונקייה
+function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img, do_viz)
+    % process_fingerprint - גרסה משודרגת עם שיפור Gabor
+    % קלט: תמונה גולמית (צבעונית או אפורה)
+    % פלט: תבנית נקודות מסוננת, מסיכה, נקודות גולמיות, ודסקריפטורים
     
     if nargin < 2, do_viz = false; end
     cfg = get_config();
+    
+    % מבנה לדיבוג
     debug = struct();
     
-    % 1. המרה לאפור ונרמול ל-Double
+    % 1. המרה לאפור ונרמול
     if size(img, 3) == 3, img = rgb2gray(img); end
     img = im2double(img);
     debug.imgGray = img;
     
-    % --- שלב א': הכנה ללא חיתוך פיזי ---
+    % --- שלב השיפור החדש (Gabor Enhancement) ---
     
-    % 2. חישוב מסיכה (ROI) עם הפונקציה המתוקנת
-    roiMask = get_roi_mask(img);
+    % 2. סגמנטציה (הפרדת האצבע מהרקע)
+    [normim, mask, ~] = ridgesegment(img, cfg.gabor.blk_sze, cfg.gabor.thresh);
+    roiMask = mask; % שומרים את המסיכה המדויקת שחושבה כאן
     debug.roiMask = roiMask;
     
-    % 3. נרמול גלובלי (במקום ridgesegment)
-    % מנרמלים את כל התמונה לתוחלת 0 וסטיית תקן 1.
-    % זה שומר על גודל התמונה המקורי ומונע הזזת קואורדינטות.
-    mean_val = mean(img(:));
-    std_val = std(img(:));
-    normim = (img - mean_val) / (std_val + eps);
-    
-    % --- שלב ב': שיפור Gabor ---
-    
-    % 4. חישוב כיוונים (Orientation Map)
+    % 3. חישוב כיוונים (Orientation Map)
     orientim = ridgeorient(normim, cfg.gabor.grad_sigma, cfg.gabor.block_sigma, cfg.gabor.smooth_sigma);
     
-    % 5. חישוב תדרים (Frequency Map)
-    % שולחים את המסכה כדי לא לחשב תדרים על הרקע
-    [freqim, ~] = ridgefreq(normim, roiMask, orientim, cfg.gabor.freq_blk, ...
+    % 4. חישוב תדרים (Frequency Map)
+    [freqim, ~] = ridgefreq(normim, mask, orientim, cfg.gabor.freq_blk, ...
                             cfg.gabor.freq_wind, cfg.gabor.min_wl, cfg.gabor.max_wl);
     
-    % 6. שיפור תמונה (Gabor Filtering)
+    % 5. שיפור תמונה (Gabor Filtering)
+    % התמונה הזו חלקה וברורה הרבה יותר מהמקור
     enhancedImg = ridgefilter(normim, orientim, freqim, cfg.gabor.kx, cfg.gabor.ky, 0);
     
-    % החלת המסכה על התמונה המשופרת (ניקוי רקע)
-    enhancedImg = enhancedImg .* roiMask;
-    debug.enhancedImg = enhancedImg; 
-    
-    % 7. בינאריזציה וניקוי
-    % שימוש בסף 0 (ערכים חיוביים = רכס)
+    % 6. בינאריזציה וניקוי
+    % פלט גאבור הוא סביב ה-0. ערכים > 0 הם רכסים.
     binaryImg = enhancedImg > 0;
+    binaryImg = binaryImg & roiMask; % חיתוך לפי המסיכה
     
-    % חיתוך סופי לפי המסיכה של get_roi_mask
-    binaryImg = binaryImg & roiMask; 
-    
-    % ניקוי חורים ורעשים
-    binaryImg = bwareaopen(binaryImg, 10);        
-    binaryImg = ~bwareaopen(~binaryImg, 10);      
+    % ניקוי חורים קטנים שנוצרו (אופציונלי אך מומלץ)
+    binaryImg = bwareaopen(binaryImg, 10);
+    binaryImg = ~bwareaopen(~binaryImg, 10);
     
     debug.binaryMasked = binaryImg;
     
-    % 8. יצירת שלד (Skeletonization)
+    % 7. יצירת שלד (Skeletonization)
     skeletonImg = bwmorph(binaryImg, 'thin', Inf);
     skeletonImg = bwmorph(skeletonImg, 'clean');
     skeletonImg = bwmorph(skeletonImg, 'diag');
@@ -627,17 +617,17 @@ function [template, roiMask, rawMinutiae, descriptors, debug] = process_fingerpr
     
     debug.skeletonImg = skeletonImg;
     
-    % --- שלב ג': חילוץ מאפיינים ---
+    % --- שלב חילוץ המאפיינים (כמו בקוד הקודם) ---
     
-    % 9. חילוץ נקודות (Minutiae) מהשלד הנקי
+    % 8. חילוץ נקודות (Minutiae) מהשלד הנקי
     rawMinutiae = extract_minutiae_features(skeletonImg, cfg);
     debug.rawMinutiae = rawMinutiae;
     
-    % 10. סינון סופי
+    % 9. סינון סופי (שוליים, צפיפות, מבנה)
     template = filter_minutiae(rawMinutiae, roiMask, cfg);
     debug.finalTemplate = template;
     
-    % 11. חישוב מתארים
+    % 10. חישוב מתארים (Descriptors)
     descriptors = compute_descriptors(template, cfg);
     
     % --- ויזואליזציה ---
@@ -657,15 +647,15 @@ function cfg = get_config()
     % get_config - קובץ הגדרות מרכזי (גרסה מתוקנת)
     
     %% 1. הגדרות מערכת וקבצים
-    cfg.db_filename = fullfile('database', 'fingerprint_database.mat');
+    cfg.db_filename = 'fingerprint_database.mat';
     
     %% 2. הגדרות Gabor (שיפור תמונה מתקדם)
     cfg.gabor.blk_sze = 16;       % גודל בלוק לסגמנטציה
-    cfg.gabor.thresh = 0.05;       % סף שונות להפרדת רקע
+    cfg.gabor.thresh = 0.1;       % סף שונות להפרדת רקע
     cfg.gabor.grad_sigma = 1;     % סיגמא לחישוב נגזרות כיוון
     cfg.gabor.block_sigma = 7;    % סיגמא להחלקת כיוונים
     cfg.gabor.smooth_sigma = 7;   % החלקה סופית של שדה הכיוונים
-    cfg.gabor.freq_blk = 38;      % גודל בלוק לחישוב תדר
+    cfg.gabor.freq_blk = 30;      % גודל בלוק לחישוב תדר
     cfg.gabor.freq_wind = 5;      % חלון חישוב תדר
     cfg.gabor.min_wl = 5;         % אורך גל מינימלי
     cfg.gabor.max_wl = 15;        % אורך גל מקסימלי
@@ -721,27 +711,25 @@ end
 % ========================================================================
 
 function mask = get_roi_mask(img)
-    % get_roi_mask - גרסה מתוקנת המונעת חיתוך של טביעות מקוטעות
+    % get_roi_mask - מחזירה מסיכה מלאה ואטומה (ללא כרסום)
     
     cfg = get_config();
     
-    % 1. זיהוי טקסטורה (כמו במקור)
+    % 1. זיהוי טקסטורה
     textureMap = rangefilt(img);
     level = graythresh(textureMap);
     mask = imbinarize(textureMap, level);
     
     % 2. חיבור וסגירה
-    % שימוש בערך גדול כדי לאחד את כל הפסים לגוש אחד
+    % שימוש בערך גדול (20) כדי לאחד את כל הפסים לגוש אחד
     seClose = strel('disk', cfg.roi.closing_size); 
     mask = imclose(mask, seClose);
     
     % 3. מילוי חורים (קריטי לחישוב מרחק תקין)
     mask = imfill(mask, 'holes');
     
-    % --- התיקון הקריטי ---
-    % במקום bwareafilt(mask, 1) ששומר רק אחד, נשמור כל גוש משמעותי
-    % נניח שכל כתם שקטן מ-400 פיקסלים הוא רעש, וכל השאר הוא מידע רלוונטי
-    mask = bwareaopen(mask, 400); 
+    % 4. ניקוי רעשי רקע (השארת הגוש הגדול בלבד)
+    mask = bwareafilt(mask, 1);
     
     mask = logical(mask);
 end
@@ -753,31 +741,55 @@ end
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\01_Enhancement
 % ========================================================================
 
+% =========================================================================
+% RIDGEFILTER - שיפור התמונה בעזרת מסנן גאבור (Gabor Filter)
+% =========================================================================
+% תפקיד הפונקציה בפועל:
+% זהו "המנוע" של המערכת. הפונקציה בונה מסנן ייחודי לכל פיקסל בתמונה,
+% בהתבסס על:
+% 1. הכיוון שלו (מ-ridgeorient)
+% 2. העובי שלו (מ-ridgefreq)
+%
+% הפעולה שהיא מבצעת:
+% היא "מורחת" את הפיקסלים *רק* לאורך כיוון הרכס.
+% התוצאה: "חורים" ונתקים בתוך הרכס מתמלאים (נסגרים),
+% ורעש שנמצא בין הרכסים (בעמקים) נמחק.
+%
+% פלט: תמונה משופרת ונקייה, מוכנה לבינאריזציה ודיקוק.
+% =========================================================================
+
+
 function [newim] = ridgefilter(im, orient, freq, kx, ky, showfilter)
-    % RIDGEFILTER - גרסה מתוקנת עם Padding (מונעת מסגרת שחורה)
-    
+% RIDGEFILTER - Enhances fingerprint image via oriented filters
+%
+% Usage: [newim] = ridgefilter(im, orient, freq, kx, ky, showfilter)
+%
+% Arguments:  im         - Image to be processed.
+%             orient     - Ridge orientation image.
+%             freq       - Ridge frequency image.
+%             kx, ky     - Scale factors specifying the filter sigma relative
+%                          to the wavelength of the filter (suggest 0.5).
+%             showfilter - An optional flag 0/1.  If set to 1 the code will
+%                          display the filter being created.
+%
+% Returns:    newim      - The enhanced image.
+
     if nargin == 5; showfilter = 0; end
     
-    angleInc = 3;
+    angleInc = 3;  % Fixed angle increment between filter orientations in degrees
     im = double(im);
     [rows, cols] = size(im);
     newim = zeros(rows,cols);
     
-    % --- שלב א: הכנת התדרים ---
+    % Round the array of frequencies to the nearest 0.01 to reduce the
+    % number of distinct frequencies we have to generate filters for.
     freq_1d = freq(:);
     ind = find(freq_1d > 0);
     freq_1d(ind) = round(freq_1d(ind)*100)/100;
     unifreqs = unique(freq_1d(ind));
     
-    % חישוב גודל הפילטר המקסימלי כדי לדעת כמה ריפוד צריך
-    % (ערך משוער בטוח)
-    max_sze = 60; 
-    
-    % --- שלב ב: ריפוד התמונה (Padding) ---
-    % אנו מרפדים את התמונה בשכפול מראה כדי למנוע אפקטי קצה
-    im_padded = padarray(im, [max_sze max_sze], 'symmetric');
-    
-    % יצירת הפילטרים
+    % Generate filters corresponding to these distinct frequencies and
+    % orientations in 'angleInc' increments.
     sigmax = 0; sigmay = 0;
     sze = zeros(length(unifreqs),1);
     filters = cell(length(unifreqs), 180/angleInc);
@@ -789,41 +801,56 @@ function [newim] = ridgefilter(im, orient, freq, kx, ky, showfilter)
         [x,y] = meshgrid(-sze(k):sze(k));
         reffilter = exp(-(x.^2/sigmax^2 + y.^2/sigmay^2)/2)...
                     .*cos(2*pi*unifreqs(k)*x);
+        
+        % Generate rotated versions of the filter
         for o = 1:180/angleInc
             filters{k,o} = imrotate(reffilter, -(o*angleInc+90), 'bilinear', 'crop'); 
         end
     end
 
-    % --- שלב ג: סינון התמונה ---
+    % Apply the filters to the image
+    % Find indices of matrix points greater than maxsze from the image boundary
+    maxsze = sze(1);
+    finalind = find(freq>0);
+    
+    % Convert orientation matrix values from radians to an index value
+    % that corresponds to round(degrees/angleInc)
     maxorientindex = round(180/angleInc);
     orientindex = round(orient/pi*180/angleInc);
     i = find(orientindex < 1);   orientindex(i) = orientindex(i)+maxorientindex;
     i = find(orientindex > maxorientindex); orientindex(i) = orientindex(i)-maxorientindex; 
     
+    % Filter the image
     for k = 1:length(unifreqs)
         thisfreq = unifreqs(k);
+        
+        % Find where this frequency occurs in the image
         freqind = find(freq_1d == thisfreq);
         
-        current_sze = sze(k);
-        
+        % Iterate through the orientation indices
         for o = 1:180/angleInc
             ind = intersect(freqind, find(orientindex(:)==o));
+             
             if ~isempty(ind)
+                % Extract the relevant filter
                 filter = filters{k,o};
+                
+                % Get row and col indices
                 [r, c] = ind2sub([rows,cols], ind);
                 
-                % לולאה על הפיקסלים הרלוונטיים
-                for i = 1:length(r)
-                    % המיקום בתמונה המרופדת
-                    r_pad = r(i) + max_sze;
-                    c_pad = c(i) + max_sze;
-                    
-                    % חילוץ הבלוק מתוך התמונה המרופדת (בטוח לגמרי, אין חריגה)
-                    blk = im_padded(r_pad-current_sze:r_pad+current_sze, ...
-                                    c_pad-current_sze:c_pad+current_sze);
-                                
-                    newim(r(i),c(i)) = sum(sum(blk.*filter));
-                end
+                % Apply filter to these pixels (valid boundary check required in loops)
+                % Simplification for speed: Block processing or full convolution 
+                % is usually done here. For pixel-wise efficiency:
+                 
+                 r_valid = r(r>sze(k) & r<rows-sze(k) & c>sze(k) & c<cols-sze(k));
+                 c_valid = c(r>sze(k) & r<rows-sze(k) & c>sze(k) & c<cols-sze(k));
+                 
+                 % Note: This loop can be slow in MATLAB. A faster way is using
+                 % block processing, but this is the explicit implementation.
+                 for i = 1:length(r_valid)
+                     blk = im(r_valid(i)-sze(k):r_valid(i)+sze(k), c_valid(i)-sze(k):c_valid(i)+sze(k));
+                     newim(r_valid(i),c_valid(i)) = sum(sum(blk.*filter));
+                 end
             end
         end
     end
@@ -1019,7 +1046,20 @@ end
 % ========================================================================
 
 function [normim, mask, maskind] = ridgesegment(im, blksze, thresh)
-    % RIDGESEGMENT - גרסה נקייה ללא חיתוך (No Crop)
+% =========================================================================
+% RIDGESEGMENT - הפרדת טביעת האצבע מהרקע (Segmentation)
+% =========================================================================
+% תפקיד הפונקציה בפועל:
+% 1. נרמול התמונה: מאזנת את הבהירות והניגודיות כדי שהחישובים יהיו אחידים.
+% 2. חישוב שונות (Variance): מחלקת את התמונה לבלוקים (למשל 16x16).
+%    - אם השונות בבלוק גבוהה -> יש שם קווים (רכסים) -> זה חלק מהאצבע.
+%    - אם השונות נמוכה -> האזור חלק -> זה רקע ריק.
+% 3. יצירת מסכה (Mask): מחזירה מפה של 0 ו-1 שאומרת לנו איפה האצבע נמצאת.
+%
+% קלט: תמונה גולמית.
+% פלט: תמונה מנורמלת + מסכה (Mask) שמחקה את הרקע המיותר.
+% =========================================================================
+
     
     im = double(im);
     [rows, cols] = size(im);  
@@ -1027,7 +1067,7 @@ function [normim, mask, maskind] = ridgesegment(im, blksze, thresh)
     % 1. נרמול ראשוני
     im = (im - mean(im(:))) / std(im(:));
     
-    % 2. חישוב שונות לכל בלוק
+    % 2. חישוב שונות לכל בלוק (זיהוי אזורי האצבע)
     stddevim = zeros(rows,cols);
     for r = 1:blksze:rows-blksze+1
         for c = 1:blksze:cols-blksze+1
@@ -1036,14 +1076,34 @@ function [normim, mask, maskind] = ridgesegment(im, blksze, thresh)
         end
     end
     
-    % 3. יצירת מסיכה
+    % 3. יצירת מסיכה (1=אצבע, 0=רקע)
     mask = stddevim > thresh;
     
-    % 4. ניקוי מורפולוגי של המסיכה (במקום חיתוך!)
-    mask = imfill(mask, 'holes');
-    mask = bwareaopen(mask, 100); % הסרת רעשים קטנים
+    % --- תוספת חדשה: חיתוך השוליים (Cropping) ---
+    % אנו בודקים אלו שורות ועמודות מכילות מידע (1)
+    rows_with_data = any(mask, 2);
+    cols_with_data = any(mask, 1);
     
-    % 5. נרמול סופי
+    % מציאת הגבולות (האינדקס הראשון והאחרון שיש בו אצבע)
+    r1 = find(rows_with_data, 1, 'first');
+    r2 = find(rows_with_data, 1, 'last');
+    c1 = find(cols_with_data, 1, 'first');
+    c2 = find(cols_with_data, 1, 'last');
+    
+    % ביצוע החיתוך בפועל (רק אם נמצא מידע)
+    if ~isempty(r1) && ~isempty(c1)
+        % הוספת "ריפוד" קטן של 2 פיקסלים שלא יהיה צפוף מדי (אופציונלי)
+        padding = 2;
+        r1 = max(1, r1 - padding); r2 = min(rows, r2 + padding);
+        c1 = max(1, c1 - padding); c2 = min(cols, c2 + padding);
+        
+        % חיתוך התמונה והמסיכה
+        im = im(r1:r2, c1:c2);
+        mask = mask(r1:r2, c1:c2);
+    end
+    % ---------------------------------------------
+    
+    % 4. נרמול סופי (מבוסס רק על אזור האצבע החתוך)
     maskind = find(mask);
     if ~isempty(maskind)
         im = (im - mean(im(maskind))) / std(im(maskind));

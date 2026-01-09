@@ -1,5 +1,5 @@
 %% run_visualizer.m - סקריפט לבחירת תמונה והצגת ה-Pipeline
-clc; clear; close all;
+clc; clear;
 
 % --- תיקון קריטי: הוספת תיקיית הפונקציות ל-Path ---
 % הפקודה הזו אומרת למאטלב לחפש פונקציות גם בתיקיית src
@@ -14,7 +14,7 @@ end
 USE_FIXED_FILE = true; 
 
 % הגדר כאן רק את שם הקובץ
-FIXED_FILENAME = '103_5.tif'; 
+FIXED_FILENAME = '101_5.tif'; 
 
 % הגדר כאן את הנתיב לתיקייה
 FIXED_FOLDER = 'C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\data\DB1_B';
