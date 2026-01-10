@@ -14,7 +14,9 @@ end
 USE_FIXED_FILE = true; 
 
 % הגדר כאן רק את שם הקובץ
-FIXED_FILENAME = '101_5.tif'; 
+%FIXED_FILENAME = '101_7.tif'; 107_6.tif 108_5.tif 106_8.tif 
+FIXED_FILENAME = '106_8.tif'; 
+
 
 % הגדר כאן את הנתיב לתיקייה
 FIXED_FOLDER = 'C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\data\DB1_B';

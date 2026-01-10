@@ -13,7 +13,7 @@ function cfg = get_config()
     cfg.gabor.freq_blk = 30;      % גודל בלוק לחישוב תדר
     cfg.gabor.freq_wind = 5;      % חלון חישוב תדר
     cfg.gabor.min_wl = 3;         % אורך גל מינימלי
-    cfg.gabor.max_wl = 20;        % אורך גל מקסימלי
+    cfg.gabor.max_wl = 25;        % אורך גל מקסימלי
     cfg.gabor.kx = 0.65;          % חוזק הסינון בציר X
     cfg.gabor.ky = 0.65;          % חוזק הסינון בציר Y
     
