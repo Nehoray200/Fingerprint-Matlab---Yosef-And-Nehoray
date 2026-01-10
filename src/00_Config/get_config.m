@@ -1,32 +1,32 @@
 function cfg = get_config()
-    % get_config - קובץ הגדרות מרכזי (גרסה מתוקנת)
+    % get_config - קובץ הגדרות מרכזי (מעודכן עם שליטה בגבולות)
     
     %% 1. הגדרות מערכת וקבצים
     cfg.db_filename = 'fingerprint_database.mat';
     
     %% 2. הגדרות Gabor (שיפור תמונה מתקדם)
-    cfg.gabor.blk_sze = 16;       % גודל בלוק לסגמנטציה
-    cfg.gabor.thresh = 0.1;       % סף שונות להפרדת רקע
-    cfg.gabor.grad_sigma = 1;     % סיגמא לחישוב נגזרות כיוון
-    cfg.gabor.block_sigma = 7;    % סיגמא להחלקת כיוונים
-    cfg.gabor.smooth_sigma = 7;   % החלקה סופית של שדה הכיוונים
-    cfg.gabor.freq_blk = 30;      % גודל בלוק לחישוב תדר
-    cfg.gabor.freq_wind = 5;      % חלון חישוב תדר
-    cfg.gabor.min_wl = 3;         % אורך גל מינימלי
-    cfg.gabor.max_wl = 25;        % אורך גל מקסימלי
-    cfg.gabor.kx = 0.65;          % חוזק הסינון בציר X
-    cfg.gabor.ky = 0.65;          % חוזק הסינון בציר Y
+    cfg.gabor.blk_sze = 16;       
+    cfg.gabor.thresh = 0.1;       
+    cfg.gabor.grad_sigma = 1;     
+    cfg.gabor.block_sigma = 7;    
+    cfg.gabor.smooth_sigma = 7;   
+    cfg.gabor.freq_blk = 30;      
+    cfg.gabor.freq_wind = 5;      
+    cfg.gabor.min_wl = 3;         
+    cfg.gabor.max_wl = 25;        
+    cfg.gabor.kx = 0.65;          
+    cfg.gabor.ky = 0.65;          
     
     %% 3. הגדרות עיבוד המשך ובינאריזציה
     cfg.binarize.sens = 0.5;      
     
     %% 4. הגדרות רישום ובקרת איכות (Enrollment)
-    cfg.enroll.min_minutiae = 12; % מינימום נקודות לרישום
+    cfg.enroll.min_minutiae = 12; 
     
     %% 5. הגדרות מסיכה ועיבוד מקדים
     cfg.roi.erosion_size = 10;   
     cfg.roi.closing_size = 10;  
-    
+    cfg.roi.mask_dilation = 20;
     cfg.preprocess.gauss_sigma = 0.8;       
     cfg.preprocess.bin_sensitivity = 0.65;  
     
@@ -37,6 +37,11 @@ function cfg = get_config()
     %% 7. הגדרות סינון (Filtering)
     cfg.filter.border_margin = 20; 
     cfg.filter.min_distance = 20;  
+    
+    % --- הגדרה חדשה לשליטה בגבולות ---
+    % 0 = גבול קמור רחב (Convex Hull), 1 = גבול צמוד והדוק מאוד לנקודות
+    % מומלץ: 0.5
+    cfg.filter.boundary_shrink_factor = 0.5; 
     
     % סינון גיאומטרי
     cfg.filter.max_short_ridge_dist = 15; 
