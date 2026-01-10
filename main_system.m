@@ -4,9 +4,7 @@
 clc; clear; close all;
 
 % --- 1. הגדרת נתיבים ---
-addpath(genpath('src'));
-addpath('data');         
-
+setup_project();
 % --- 2. הגדרות מערכת ---
 cfg = get_config();
 dbFileName = cfg.db_filename; 
@@ -111,27 +109,75 @@ while true
             end
             
         % === 3. רישום המוני ===
+     % === 3. רישום המוני (אופטימלי) ===
         case 3
+            % בחירת תיקייה או קבצים
             [files, path] = uigetfile({'*.tif;*.png;*.jpg', 'Images'}, 'בחר תמונות', 'data/', 'MultiSelect', 'on');
             if isequal(files, 0), continue; end
             if ischar(files), files = {files}; end
             
+            % טעינת המאגר הקיים
+            currentDB = [];
+            if isfile(dbFileName)
+                try
+                    tmp = load(dbFileName, 'fingerprintDB');
+                    currentDB = tmp.fingerprintDB;
+                catch
+                    currentDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {}, 'T_sq', {});
+                end
+            else
+                currentDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {}, 'T_sq', {});
+            end
+            
             hWait = waitbar(0, 'מבצע רישום...');
+            numFiles = length(files);
+            
+            % --- שינוי: שימוש ב-Cell Array זמני למניעת הקצאת זיכרון איטית ---
+            tempDB = cell(numFiles, 1); 
             cnt = 0;
-            for k = 1:length(files)
-                waitbar(k/length(files), hWait, sprintf('מעבד %d/%d', k, length(files)));
-                [data, ~, err] = load_and_process_image(fullfile(path, files{k}), minPointsEnroll);
+            
+            for k = 1:numFiles
+                waitbar(k/numFiles, hWait, sprintf('מעבד %d/%d', k, numFiles));
+                
+                fullFilePath = fullfile(path, files{k});
+                [data, ~, err] = load_and_process_image(fullFilePath, minPointsEnroll);
                 
                 if isempty(err)
                     [~, nameByUser, ~] = fileparts(files{k});
-                    add_user_to_db(dbFileName, nameByUser, data, fullfile(path, files{k}));
+                    
+                    % בניית המבנה עבור התמונה הנוכחית
+                    newEntry = struct();
+                    newEntry.name = nameByUser;
+                    newEntry.template = data.minutiae;
+                    newEntry.descriptors = data.descriptors;
+                    newEntry.imagePath = fullFilePath;
+                    
+                    % חישוב T_sq מראש (אופטימיזציה לזיהוי)
+                    newEntry.T_sq = sum(data.minutiae(:,1:2).^2, 2);
+                    
+                    % שמירה לתא במערך (פעולה מהירה מאוד)
+                    tempDB{k} = newEntry;
                     cnt = cnt + 1;
                 end
             end
             close(hWait);
-            db_needs_reload = true;
-            msgbox(['נוספו ' num2str(cnt) ' משתמשים למאגר.'], 'סיום');
-
+            
+            % --- מיזוג למאגר הראשי ---
+            % סינון תאים ריקים (במקרה של שגיאות בקבצים מסוימים)
+            tempDB = tempDB(~cellfun('isempty', tempDB));
+            
+            % המרת ה-Cell למערך Struct ושרשור למאגר הקיים
+            if ~isempty(tempDB)
+                newStructs = [tempDB{:}]; 
+                currentDB = [currentDB; newStructs(:)];
+                
+                fingerprintDB = currentDB;
+                save(dbFileName, 'fingerprintDB');
+                db_needs_reload = true;
+                msgbox(['נוספו ' num2str(cnt) ' משתמשים למאגר בהצלחה!'], 'סיום');
+            else
+                msgbox('לא נוספו משתמשים (אולי האיכות הייתה נמוכה מדי?)', 'מידע');
+            end
         % === 4. זיהוי המוני (בדיקות) ===
         case 4
             if isempty(fingerprintDB), msgbox('המאגר ריק.', 'שגיאה', 'error'); continue; end

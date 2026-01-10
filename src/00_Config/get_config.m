@@ -36,7 +36,7 @@ function cfg = get_config()
     cfg.roi.erosion_size = 10;    % כמה "לכרסם" פנימה את המסיכה כדי להסיר קצוות רועשים.
     cfg.roi.closing_size = 10;    % גודל האלמנט לסגירת חורים קטנים במסיכה.
     cfg.roi.mask_dilation = 20;   % *חשוב*: כמה להרחיב את המסיכה החוצה. מספר גבוה (כמו 20) מבטיח שלא נחתוך קצוות אמיתיים של האצבע.
-    
+    cfg.roi.strict_erosion = 12;      % כיווץ המסיכה לפני חילוץ נקודות (במקום המספר 12 הקבוע)
     cfg.preprocess.gauss_sigma = 0.8;       % טשטוש קל בהתחלה להסרת רעשי מצלמה (Salt & Pepper).
     cfg.preprocess.bin_sensitivity = 0.65;  % רגישות ספציפית לשלב ה-Preprocessing.
     

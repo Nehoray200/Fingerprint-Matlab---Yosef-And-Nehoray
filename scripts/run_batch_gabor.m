@@ -1,9 +1,6 @@
 %% run_batch_gabor.m - עיבוד אצווה עם Gabor ב-MATLAB בלבד
 clc; close all; clear;
-
-% הוספת נתיב לפונקציות
-addpath('src');
-
+setup_project();
 % הגדרת תיקיית שמירה
 saveFolder = fullfile(pwd, 'data', 'processed_skeletons'); 
 if ~exist(saveFolder, 'dir'), mkdir(saveFolder); end

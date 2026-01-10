@@ -53,7 +53,13 @@ function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img
     
     % --- שלב התיקון: יצירת מסיכה קפדנית לפני החילוץ ---
     % אנו מכווצים את המסיכה ב-12 פיקסלים כדי לזרוק את הקצוות הרועשים
-    seStrict = strel('disk', 12); 
+   % --- שלב התיקון: יצירת מסיכה קפדנית לפני החילוץ ---
+   % שימוש בערך מהקונפיגורציה
+   erosionVal = 12; % ברירת מחדל
+   if isfield(cfg.roi, 'strict_erosion')
+       erosionVal = cfg.roi.strict_erosion;
+   end
+   seStrict = strel('disk', erosionVal);
     strictMask = imerode(roiMask, seStrict);
     
     % 8. חילוץ נקודות - שולחים את המסיכה הקפדנית!

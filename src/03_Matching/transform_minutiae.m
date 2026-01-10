@@ -1,31 +1,39 @@
-function transformedList = transform_minutiae(minutiaeList, dTheta, dX, dY)
-    % transform_minutiae - מבצעת מניפולציה גיאומטרית על רשימת נקודות
-    % קלט: רשימת נקודות, זווית סיבוב (רדיאנים), והזזה ב-X וב-Y
+function transformedList = transform_minutiae(minutiaeList, dTheta, dX, dY, centerPoint)
+    % transform_minutiae - מבצעת מניפולציה גיאומטרית
+    % כעת תומכת בסיבוב סביב נקודה ספציפית (centerPoint)
     
     if isempty(minutiaeList)
         transformedList = [];
         return;
     end
     
-    transformedList = minutiaeList; % מעתיקים את המבנה
+    if nargin < 5 || isempty(centerPoint)
+        cx = 0; cy = 0; % ברירת מחדל: סיבוב סביב הראשית (כמו קודם)
+    else
+        cx = centerPoint(1); cy = centerPoint(2);
+    end
+    
+    transformedList = minutiaeList; 
     
     c = cos(dTheta);
     s = sin(dTheta);
     
-    % חישוב וקטורי מהיר (בלי לולאות)
     X = minutiaeList(:, 1);
     Y = minutiaeList(:, 2);
     Angles = minutiaeList(:, 4);
     
-    % 1. נוסחת הסיבוב (סביב הראשית 0,0)
+    % 1. הזזה לראשית (ביחס לנקודת המרכז)
+    X = X - cx;
+    Y = Y - cy;
+    
+    % 2. סיבוב
     X_rot = X * c - Y * s;
     Y_rot = X * s + Y * c;
     
-    % 2. הוספת ההזזה
-    transformedList(:, 1) = X_rot + dX;
-    transformedList(:, 2) = Y_rot + dY;
+    % 3. החזרה למקום + הזזה גלובלית
+    transformedList(:, 1) = X_rot + cx + dX;
+    transformedList(:, 2) = Y_rot + cy + dY;
     
-    % 3. עדכון הזווית של המינוציה עצמה (גם היא מסתובבת)
-    % שימוש ב-mod כדי לשמור על טווח -pi עד pi
+    % 4. עדכון זווית
     transformedList(:, 4) = mod(Angles + dTheta + pi, 2*pi) - pi;
 end

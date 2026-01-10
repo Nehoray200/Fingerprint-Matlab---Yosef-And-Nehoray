@@ -1,27 +1,30 @@
 function add_user_to_db(fname, name, dataStruct, path)
     % add_user_to_db - מוסיפה משתמש חדש לקובץ הנתונים
-    % Inputs:
-    %   fname:      שם קובץ ה-MAT של המאגר
-    %   name:       שם המשתמש להוספה
-    %   dataStruct: מבנה המכיל minutiae ו-descriptors
-    %   path:       נתיב התמונה המקורית (לרפרנס)
     
     if isfile(fname)
         load(fname, 'fingerprintDB');
-        % בדיקת תאימות לאחור (הוספת שדה חסר אם צריך)
+        % בדיקת תאימות לאחור
         if ~isfield(fingerprintDB, 'descriptors')
              [fingerprintDB(:).descriptors] = deal([]); 
         end
+        if ~isfield(fingerprintDB, 'T_sq')
+             [fingerprintDB(:).T_sq] = deal([]); 
+        end
     else
-        % יצירת מאגר חדש אם לא קיים
-        fingerprintDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {});
+        % יצירת מאגר חדש עם השדה החדש לאופטימיזציה
+        fingerprintDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {}, 'T_sq', {});
     end
     
     % יצירת רשומה חדשה
     newEntry.name = name;
-    newEntry.template = dataStruct.minutiae;       
+    newEntry.template = dataStruct.minutiae;        
     newEntry.descriptors = dataStruct.descriptors; 
     newEntry.imagePath = path;
+    
+    % --- אופטימיזציה: חישוב ושמירת הנורמה בריבוע ---
+    % זה יחסוך חישוב יקר בזמן הזיהוי (Real-Time)
+    newEntry.T_sq = sum(dataStruct.minutiae(:,1:2).^2, 2);
+    % ---------------------------------------------
     
     % הוספה למערך ושמירה
     fingerprintDB(end+1) = newEntry;
