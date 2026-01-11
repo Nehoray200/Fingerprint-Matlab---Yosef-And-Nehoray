@@ -1,10 +1,12 @@
 % ========================================================================
-% מערכת ביומטרית לזיהוי טביעת אצבע - main_system.m (גרסה נקייה)
+% מערכת ביומטרית לזיהוי טביעת אצבע - main_system.m (גרסה סופית ומתוקנת)
 % ========================================================================
 clc; clear; close all;
 
-% --- 1. הגדרת נתיבים ---
+% --- 1. הגדרת נתיבים (חכם) ---
+% קורא לפונקציה שמגדירה נתיבים יחסיים כדי שהקוד יעבוד בכל מחשב
 setup_project();
+
 % --- 2. הגדרות מערכת ---
 cfg = get_config();
 dbFileName = cfg.db_filename; 
@@ -41,7 +43,7 @@ while true
                   '2. זיהוי משתמש בודד', ...
                   '3. רישום המוני (תיקייה)', ...
                   '4. זיהוי המוני + סטטיסטיקה', ...
-                  '5. הצגת המאגר', ...
+                  '5. הצגת המאגר (מתקדם)', ...
                   '6. יציאה');
               
     if choice == 6 || choice == 0
@@ -64,8 +66,9 @@ while true
             
             name = inputdlg('הכנס שם משתמש:', 'רישום');
             if ~isempty(name) && ~isempty(name{1})
+                % הפונקציה add_user_to_db עודכנה לחשב T_sq גם כאן
                 add_user_to_db(dbFileName, name{1}, currentData, fullfile(path, file));
-                db_needs_reload = true; % לסמן לטעון מחדש
+                db_needs_reload = true; 
             end
             
         % === 2. זיהוי בודד ===
@@ -90,7 +93,13 @@ while true
                 dbData.minutiae = fingerprintDB(i).template;
                 dbData.descriptors = fingerprintDB(i).descriptors;
                 
-                [score, aligned, ~] = find_best_match(dbData, currentData);
+                % בדיקת אופטימיזציה (אם קיימת במאגר)
+                if isfield(fingerprintDB(i), 'T_sq')
+                    dbData.T_sq = fingerprintDB(i).T_sq;
+                end
+                
+                % --- תיקון: הפונקציה מחזירה רק 2 ערכים כעת ---
+                [score, aligned] = find_best_match(dbData, currentData);
                 
                 if score > bestScore
                     bestScore = score;
@@ -108,10 +117,8 @@ while true
                 msgbox(['לא נמצאה התאמה. הציון הכי גבוה: ' num2str(bestScore)], 'כישלון', 'error');
             end
             
-        % === 3. רישום המוני ===
-     % === 3. רישום המוני (אופטימלי) ===
+        % === 3. רישום המוני (אופטימלי) ===
         case 3
-            % בחירת תיקייה או קבצים
             [files, path] = uigetfile({'*.tif;*.png;*.jpg', 'Images'}, 'בחר תמונות', 'data/', 'MultiSelect', 'on');
             if isequal(files, 0), continue; end
             if ischar(files), files = {files}; end
@@ -132,7 +139,7 @@ while true
             hWait = waitbar(0, 'מבצע רישום...');
             numFiles = length(files);
             
-            % --- שינוי: שימוש ב-Cell Array זמני למניעת הקצאת זיכרון איטית ---
+            % --- תיקון: שימוש ב-Cell Array למניעת הקצאת זיכרון איטית ---
             tempDB = cell(numFiles, 1); 
             cnt = 0;
             
@@ -145,28 +152,25 @@ while true
                 if isempty(err)
                     [~, nameByUser, ~] = fileparts(files{k});
                     
-                    % בניית המבנה עבור התמונה הנוכחית
+                    % בניית המבנה
                     newEntry = struct();
                     newEntry.name = nameByUser;
                     newEntry.template = data.minutiae;
                     newEntry.descriptors = data.descriptors;
                     newEntry.imagePath = fullFilePath;
                     
-                    % חישוב T_sq מראש (אופטימיזציה לזיהוי)
+                    % חישוב T_sq מראש (אופטימיזציה)
                     newEntry.T_sq = sum(data.minutiae(:,1:2).^2, 2);
                     
-                    % שמירה לתא במערך (פעולה מהירה מאוד)
+                    % שמירה לתא במערך הזמני
                     tempDB{k} = newEntry;
                     cnt = cnt + 1;
                 end
             end
             close(hWait);
             
-            % --- מיזוג למאגר הראשי ---
-            % סינון תאים ריקים (במקרה של שגיאות בקבצים מסוימים)
+            % מיזוג למאגר הראשי ושמירה בפעולה אחת
             tempDB = tempDB(~cellfun('isempty', tempDB));
-            
-            % המרת ה-Cell למערך Struct ושרשור למאגר הקיים
             if ~isempty(tempDB)
                 newStructs = [tempDB{:}]; 
                 currentDB = [currentDB; newStructs(:)];
@@ -176,8 +180,9 @@ while true
                 db_needs_reload = true;
                 msgbox(['נוספו ' num2str(cnt) ' משתמשים למאגר בהצלחה!'], 'סיום');
             else
-                msgbox('לא נוספו משתמשים (אולי האיכות הייתה נמוכה מדי?)', 'מידע');
+                msgbox('לא נוספו משתמשים (איכות נמוכה או שגיאה).', 'מידע');
             end
+
         % === 4. זיהוי המוני (בדיקות) ===
         case 4
             if isempty(fingerprintDB), msgbox('המאגר ריק.', 'שגיאה', 'error'); continue; end
@@ -194,7 +199,7 @@ while true
                 waitbar(k/length(files), hWait, sprintf('בודק %d/%d', k, length(files)));
                 [currData, ~, err] = load_and_process_image(fullfile(path, files{k}), minPointsEnroll);
                 
-                realID = strsplit(files{k}, '_'); realID = realID{1}; % הנחה: השם הוא ID_X.tif
+                realID = strsplit(files{k}, '_'); realID = realID{1}; 
                 
                 if ~isempty(err)
                     results(end+1, :) = {files{k}, realID, '---', 0, 'פסול (איכות)'};
@@ -207,7 +212,14 @@ while true
                 for i = 1:length(fingerprintDB)
                     dbData.minutiae = fingerprintDB(i).template;
                     dbData.descriptors = fingerprintDB(i).descriptors;
-                    [score, ~, ~] = find_best_match(dbData, currData);
+                    
+                    % בדיקת אופטימיזציה T_sq
+                    if isfield(fingerprintDB(i), 'T_sq')
+                        dbData.T_sq = fingerprintDB(i).T_sq;
+                    end
+                    
+                    % --- תיקון: הפונקציה מחזירה רק 2 ערכים ---
+                    [score, ~] = find_best_match(dbData, currData);
                     
                     if score > bestScore
                         bestScore = score;
@@ -233,12 +245,53 @@ while true
             uicontrol(f, 'Style', 'text', 'String', sprintf('דיוק: %.1f%%', succRate), ...
                       'Position', [20 450 560 30], 'FontSize', 14, 'FontWeight', 'bold');
 
-        % === 5. הצגת המאגר ===
+        % === 5. הצגת המאגר (משודרג - צפייה בנתונים) ===
         case 5
             if isempty(fingerprintDB)
-                msgbox('המאגר ריק.');
+                msgbox('המאגר ריק.', 'מידע');
             else
-                listdlg('ListString', {fingerprintDB.name}, 'Name', 'משתמשים רשומים', 'ListSize', [300 400]);
+                % הכנת רשימה יפה לתצוגה שכוללת גם את מספר הנקודות
+                displayList = cell(length(fingerprintDB), 1);
+                for i = 1:length(fingerprintDB)
+                    numPts = size(fingerprintDB(i).template, 1);
+                    displayList{i} = sprintf('%s  [נקודות: %d]', fingerprintDB(i).name, numPts);
+                end
+                
+                [idx, tf] = listdlg('ListString', displayList, ...
+                                    'SelectionMode', 'single', ...
+                                    'ListSize', [300 400], ...
+                                    'Name', 'מאגר משתמשים', ...
+                                    'PromptString', 'בחר משתמש לצפייה בפרטים:');
+                
+                if tf
+                    selectedUser = fingerprintDB(idx);
+                    
+                    figure('Name', ['פרטי משתמש: ' selectedUser.name], ...
+                           'NumberTitle', 'off', 'MenuBar', 'none', ...
+                           'Position', [200 200 800 400]);
+                    
+                    % צד ימין: תמונה
+                    subplot(1, 2, 1);
+                    if isfield(selectedUser, 'imagePath') && exist(selectedUser.imagePath, 'file')
+                        imshow(imread(selectedUser.imagePath));
+                        title('תמונה מקורית', 'FontSize', 12);
+                    else
+                        axis off; 
+                        text(0.5, 0.5, 'קובץ המקור לא נמצא', ...
+                             'HorizontalAlignment', 'center', 'Color', 'r', 'FontSize', 14);
+                    end
+                    
+                    % צד שמאל: נקודות
+                    subplot(1, 2, 2);
+                    pts = selectedUser.template;
+                    plot(pts(:,1), pts(:,2), 'bo', 'MarkerFaceColor', 'b', 'MarkerSize', 4);
+                    hold on;
+                    quiver(pts(:,1), pts(:,2), cos(pts(:,4)), -sin(pts(:,4)), 0.3, 'r');
+                    axis ij; grid on; axis equal;
+                    title(['תבנית ביומטרית: ' num2str(size(pts,1)) ' נקודות'], 'FontSize', 12);
+                    legend('Minutiae', 'Direction');
+                    xlim([0 300]); ylim([0 300]); 
+                end
             end
     end
 end
