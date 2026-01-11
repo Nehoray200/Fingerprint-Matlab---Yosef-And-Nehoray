@@ -1,49 +1,49 @@
 function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img, do_viz)
-    % process_fingerprint - גרסה משודרגת עם שיפור Gabor
-    % קלט: תמונה גולמית (צבעונית או אפורה)
-    % פלט: תבנית נקודות מסוננת, מסיכה, נקודות גולמיות, ודסקריפטורים
+    % process_fingerprint - גרסה עם חילוץ מונחה מסיכה
     
     if nargin < 2, do_viz = false; end
     cfg = get_config();
-    
-    % מבנה לדיבוג
     debug = struct();
     
-    % 1. המרה לאפור ונרמול
+    % 1. המרה לאפור ונרמול ראשוני
     if size(img, 3) == 3, img = rgb2gray(img); end
     img = im2double(img);
+    img = adapthisteq(img, 'ClipLimit', 0.02);
+    
+    % --- שלב החיתוך החכם ---
+    fullMask = get_roi_mask(img);
+    [r, c] = find(fullMask);
+    if isempty(r)
+        r1=1; r2=size(img,1); c1=1; c2=size(img,2);
+    else
+        padding = 15;
+        r1 = max(1, min(r) - padding);
+        r2 = min(size(img,1), max(r) + padding);
+        c1 = max(1, min(c) - padding);
+        c2 = min(size(img,2), max(c) + padding);
+    end
+    
+    img = img(r1:r2, c1:c2);
+    roiMask = fullMask(r1:r2, c1:c2);
+    
     debug.imgGray = img;
-    
-    % --- שלב השיפור החדש (Gabor Enhancement) ---
-    
-    % 2. סגמנטציה (הפרדת האצבע מהרקע)
-    [normim, mask, ~] = ridgesegment(img, cfg.gabor.blk_sze, cfg.gabor.thresh);
-    roiMask = mask; % שומרים את המסיכה המדויקת שחושבה כאן
     debug.roiMask = roiMask;
     
-    % 3. חישוב כיוונים (Orientation Map)
+    % 2-7. עיבוד תמונה (Gabor, בינאריזציה ושלד)
+    [normim, ~, ~] = ridgesegment(img, cfg.gabor.blk_sze, cfg.gabor.thresh);
     orientim = ridgeorient(normim, cfg.gabor.grad_sigma, cfg.gabor.block_sigma, cfg.gabor.smooth_sigma);
-    
-    % 4. חישוב תדרים (Frequency Map)
-    [freqim, ~] = ridgefreq(normim, mask, orientim, cfg.gabor.freq_blk, ...
+    [freqim, ~] = ridgefreq(normim, roiMask, orientim, cfg.gabor.freq_blk, ...
                             cfg.gabor.freq_wind, cfg.gabor.min_wl, cfg.gabor.max_wl);
     
-    % 5. שיפור תמונה (Gabor Filtering)
-    % התמונה הזו חלקה וברורה הרבה יותר מהמקור
     enhancedImg = ridgefilter(normim, orientim, freqim, cfg.gabor.kx, cfg.gabor.ky, 0);
     
-    % 6. בינאריזציה וניקוי
-    % פלט גאבור הוא סביב ה-0. ערכים > 0 הם רכסים.
     binaryImg = enhancedImg > 0;
-    binaryImg = binaryImg & roiMask; % חיתוך לפי המסיכה
-    
-    % ניקוי חורים קטנים שנוצרו (אופציונלי אך מומלץ)
+    binaryImg = binaryImg & roiMask; 
     binaryImg = bwareaopen(binaryImg, 10);
     binaryImg = ~bwareaopen(~binaryImg, 10);
     
     debug.binaryMasked = binaryImg;
     
-    % 7. יצירת שלד (Skeletonization)
     skeletonImg = bwmorph(binaryImg, 'thin', Inf);
     skeletonImg = bwmorph(skeletonImg, 'clean');
     skeletonImg = bwmorph(skeletonImg, 'diag');
@@ -51,17 +51,27 @@ function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img
     
     debug.skeletonImg = skeletonImg;
     
-    % --- שלב חילוץ המאפיינים (כמו בקוד הקודם) ---
+    % --- שלב התיקון: יצירת מסיכה קפדנית לפני החילוץ ---
+    % אנו מכווצים את המסיכה ב-12 פיקסלים כדי לזרוק את הקצוות הרועשים
+   % --- שלב התיקון: יצירת מסיכה קפדנית לפני החילוץ ---
+   % שימוש בערך מהקונפיגורציה
+   erosionVal = 12; % ברירת מחדל
+   if isfield(cfg.roi, 'strict_erosion')
+       erosionVal = cfg.roi.strict_erosion;
+   end
+   seStrict = strel('disk', erosionVal);
+    strictMask = imerode(roiMask, seStrict);
     
-    % 8. חילוץ נקודות (Minutiae) מהשלד הנקי
-    rawMinutiae = extract_minutiae_features(skeletonImg, cfg);
+    % 8. חילוץ נקודות - שולחים את המסיכה הקפדנית!
+    % הנקודות שיוחזרו מכאן כבר יהיו מסוננות ראשונית
+    rawMinutiae = extract_minutiae_features(skeletonImg, strictMask, cfg);
     debug.rawMinutiae = rawMinutiae;
     
-    % 9. סינון סופי (שוליים, צפיפות, מבנה)
-    template = filter_minutiae(rawMinutiae, roiMask, cfg);
+    % 9. סינון סופי ומתקדם (בודק גם גיאומטריה וגם גבול וירטואלי נוסף ליתר ביטחון)
+    template = filter_minutiae(rawMinutiae, strictMask, cfg);
     debug.finalTemplate = template;
     
-    % 10. חישוב מתארים (Descriptors)
+    % 10. דסקריפטורים
     descriptors = compute_descriptors(template, cfg);
     
     % --- ויזואליזציה ---
