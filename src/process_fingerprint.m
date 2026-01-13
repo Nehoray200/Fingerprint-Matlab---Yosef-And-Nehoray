@@ -1,5 +1,4 @@
-function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img, do_viz)
-    % process_fingerprint - גרסה עם חילוץ מונחה מסיכה
+function [template, roiMask, rawMinutiae, descriptors, img] = process_fingerprint(img, do_viz)    % process_fingerprint - גרסה עם חילוץ מונחה מסיכה
     
     if nargin < 2, do_viz = false; end
     cfg = get_config();

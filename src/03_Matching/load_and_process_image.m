@@ -1,27 +1,24 @@
-function [fingerData, img, errorMsg] = load_and_process_image(fullPath, minPoints)
-    % load_and_process_image - פונקציית עזר לטעינה ועיבוד תמונה
-    % מחזירה את הנתונים הביומטריים, התמונה המקורית, והודעת שגיאה אם יש.
-    
+function [fingerData, processedImg, errorMsg] = load_and_process_image(fullPath, minPoints)
     fingerData = []; 
-    img = []; 
+    processedImg = []; % משתנה לתמונה המעובדת
     errorMsg = '';
     
-    if nargin < 2, minPoints = 12; end % ברירת מחדל
+    if nargin < 2, minPoints = 12; end 
     
     try
-        % 1. קריאת התמונה
-        img = imread(fullPath);
+        % 1. קריאת התמונה המקורית
+        rawImg = imread(fullPath);
         
-        % 2. הפעלת האלגוריתם (ללא ויזואליזציה)
-        [template, ~, ~, descriptors] = process_fingerprint(img, false);
+        % 2. הפעלת האלגוריתם - שים לב שאנחנו מבקשים כעת 5 משתנים!
+        [template, ~, ~, descriptors, processedImg] = process_fingerprint(rawImg, false);
         
-        % 3. בדיקת איכות (מספר נקודות מינימלי)
+        % 3. בדיקת איכות
         if size(template, 1) < minPoints
             errorMsg = sprintf('איכות נמוכה: נמצאו רק %d נקודות (דרוש %d).', size(template, 1), minPoints);
             return;
         end
         
-        % 4. אריזת הנתונים למבנה נוח
+        % 4. אריזת הנתונים
         fingerData.minutiae = template;
         fingerData.descriptors = descriptors;
         

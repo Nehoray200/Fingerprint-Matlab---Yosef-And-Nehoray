@@ -7,7 +7,7 @@ USE_FIXED_FILE = true;
 
 % הגדר כאן רק את שם הקובץ
 %FIXED_FILENAME = '101_7.tif'; 101_6.tif 108_5.tif 101_6.tif 106_4.tif 
-FIXED_FILENAME = '101_5.tif'; 
+FIXED_FILENAME = '101_4.tif'; 
 
 
 % הגדר כאן את הנתיב לתיקייה
