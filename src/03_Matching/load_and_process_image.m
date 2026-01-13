@@ -1,6 +1,8 @@
 function [fingerData, processedImg, errorMsg] = load_and_process_image(fullPath, minPoints)
+    % load_and_process_image - טוען תמונה ומחזיר את הנתונים + התמונה החתוכה
+    
     fingerData = []; 
-    processedImg = []; % משתנה לתמונה המעובדת
+    processedImg = []; 
     errorMsg = '';
     
     if nargin < 2, minPoints = 12; end 
@@ -9,7 +11,7 @@ function [fingerData, processedImg, errorMsg] = load_and_process_image(fullPath,
         % 1. קריאת התמונה המקורית
         rawImg = imread(fullPath);
         
-        % 2. הפעלת האלגוריתם - שים לב שאנחנו מבקשים כעת 5 משתנים!
+        % 2. הפעלת האלגוריתם (כעת process_fingerprint מחזירה 5 משתנים!)
         [template, ~, ~, descriptors, processedImg] = process_fingerprint(rawImg, false);
         
         % 3. בדיקת איכות

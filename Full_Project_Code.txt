@@ -402,7 +402,7 @@ USE_FIXED_FILE = true;
 
 % הגדר כאן רק את שם הקובץ
 %FIXED_FILENAME = '101_7.tif'; 101_6.tif 108_5.tif 101_6.tif 106_4.tif 
-FIXED_FILENAME = '101_2.tif'; 
+FIXED_FILENAME = '101_4.tif'; 
 
 
 % הגדר כאן את הנתיב לתיקייה
@@ -1607,30 +1607,27 @@ end
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\03_Matching
 % ========================================================================
 
-function [fingerData, img, errorMsg] = load_and_process_image(fullPath, minPoints)
-    % load_and_process_image - פונקציית עזר לטעינה ועיבוד תמונה
-    % מחזירה את הנתונים הביומטריים, התמונה המקורית, והודעת שגיאה אם יש.
-    
+function [fingerData, processedImg, errorMsg] = load_and_process_image(fullPath, minPoints)
     fingerData = []; 
-    img = []; 
+    processedImg = []; % משתנה לתמונה המעובדת
     errorMsg = '';
     
-    if nargin < 2, minPoints = 12; end % ברירת מחדל
+    if nargin < 2, minPoints = 12; end 
     
     try
-        % 1. קריאת התמונה
-        img = imread(fullPath);
+        % 1. קריאת התמונה המקורית
+        rawImg = imread(fullPath);
         
-        % 2. הפעלת האלגוריתם (ללא ויזואליזציה)
-        [template, ~, ~, descriptors] = process_fingerprint(img, false);
+        % 2. הפעלת האלגוריתם - שים לב שאנחנו מבקשים כעת 5 משתנים!
+        [template, ~, ~, descriptors, processedImg] = process_fingerprint(rawImg, false);
         
-        % 3. בדיקת איכות (מספר נקודות מינימלי)
+        % 3. בדיקת איכות
         if size(template, 1) < minPoints
             errorMsg = sprintf('איכות נמוכה: נמצאו רק %d נקודות (דרוש %d).', size(template, 1), minPoints);
             return;
         end
         
-        % 4. אריזת הנתונים למבנה נוח
+        % 4. אריזת הנתונים
         fingerData.minutiae = template;
         fingerData.descriptors = descriptors;
         
@@ -1726,6 +1723,132 @@ function add_user_to_db(fname, name, dataStruct, imgPath)
     
     disp(['>> משתמש נוסף למאגר: ' name]);
     msgbox(['המשתמש ' name ' נשמר בהצלחה!'], 'אישור');
+end
+
+
+
+% ========================================================================
+% FILENAME: run_mass_identification.m
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\05_Visualization
+% ========================================================================
+
+function run_mass_identification(app, fileList, basePath)
+    % run_mass_identification - גרסה המקבלת רשימת קבצים ספציפית
+    % app: האפליקציה (לעדכון גרפים)
+    % fileList: רשימת שמות הקבצים (Cell Array)
+    % basePath: הנתיב לתיקייה בה הם נמצאים
+    
+    totalFiles = length(fileList);
+    
+    % 1. איפוס הטבלה והמד
+    app.tblMassResults.Data = {};
+    app.gaugeProgress.Value = 0; 
+    
+    % משתנים לסטטיסטיקה
+    resultsData = {}; 
+    successCount = 0;
+    validCount = 0;
+    
+    % סף להצלחה
+    threshold = 15;
+    if isfield(app.CurrentConfig.match, 'pass_threshold')
+        threshold = app.CurrentConfig.match.pass_threshold;
+    end
+    
+    % 2. הלולאה הראשית (רוצה על הרשימה שקיבלנו)
+    for k = 1:totalFiles
+        filename = fileList{k}; % שליפת השם מהרשימה
+        fullFilePath = fullfile(basePath, filename);
+        
+        % חילוץ ID (הנחה: 101_1.tif)
+        nameParts = strsplit(filename, {'_', '.'});
+        realID = nameParts{1};
+        
+        % --- עיבוד התמונה ---
+        try
+            [currentData, ~, err] = load_and_process_image(fullFilePath, app.CurrentConfig.enroll.min_minutiae);
+        catch
+            err = 'Critical Error';
+        end
+        
+        % טיפול בשגיאות ואיכות נמוכה
+        if ~isempty(err)
+            resultsData(end+1, :) = {filename, realID, '---', 0, 'שגיאת איכות'};
+        else
+            validCount = validCount + 1;
+            
+            % --- חיפוש במאגר ---
+            bestScore = 0;
+            bestName = 'Unknown';
+            
+            for i = 1:length(app.FingerprintDB)
+                dbData.minutiae = app.FingerprintDB(i).template;
+                dbData.descriptors = app.FingerprintDB(i).descriptors;
+                
+                if isfield(app.FingerprintDB(i), 'T_sq')
+                    dbData.T_sq = app.FingerprintDB(i).T_sq;
+                end
+                
+                [score, ~] = find_best_match(dbData, currentData);
+                
+                if score > bestScore
+                    bestScore = score;
+                    bestName = app.FingerprintDB(i).name;
+                end
+            end
+            
+            % --- בדיקת תוצאה ---
+            isMatch = (bestScore >= threshold);
+            status = 'NO MATCH';
+            
+            if isMatch
+                matchParts = strsplit(bestName, {'_', '.'});
+                matchID = matchParts{1};
+                
+                if strcmp(realID, matchID)
+                    successCount = successCount + 1;
+                    status = 'V (נכון)';
+                else
+                    status = 'X (שגוי)';
+                end
+            else
+                status = 'X (לא זוהה)';
+            end
+            
+            % שמירת הנתונים
+            resultsData(end+1, :) = {filename, realID, bestName, bestScore, status};
+        end
+        
+        % --- עדכון ה-Progress Bar ---
+        % מעדכנים כל 5 תמונות או אם זו התמונה האחרונה
+        if mod(k, 5) == 0 || k == totalFiles
+            
+            progressPercent = (k / totalFiles) * 100;
+            
+            % עדכון המד
+            app.gaugeProgress.Value = progressPercent;
+            
+            % עדכון הטבלה
+            app.tblMassResults.Data = resultsData;
+            
+            % עדכון הטקסט
+            app.lblMassStatus.Text = sprintf('מעבד... %.1f%% (%d/%d)', progressPercent, k, totalFiles);
+            
+            drawnow limitrate; 
+        end
+    end
+    
+    % 3. סיום
+   currentAccuracy = 0;
+    if validCount > 0
+        currentAccuracy = (successCount / validCount) * 100;
+    end
+    
+    app.gaugeProgress.Value = 100; 
+    app.lblMassStatus.Text = sprintf('סיום! דיוק סופי: %.2f%%', currentAccuracy);
+    
+    % === התיקון כאן: הוספנו 'Icon', 'success' ===
+    uialert(app.UIFigure, 'תהליך הזיהוי ההמוני הסתיים בהצלחה.', 'הושלם', 'Icon', 'success');
 end
 
 
