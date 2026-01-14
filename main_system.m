@@ -1,4 +1,9 @@
 % ========================================================================
+% FILENAME: main_system.m
+% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab
+% ========================================================================
+
+% ========================================================================
 % מערכת ביומטרית לזיהוי טביעת אצבע - main_system.m (גרסה סופית ומתוקנת)
 % ========================================================================
 clc; clear; close all;
@@ -58,7 +63,8 @@ while true
             [file, path] = uigetfile({'*.tif;*.png;*.jpg', 'Fingerprint'}, 'בחר תמונה לרישום', 'data/');
             if isequal(file, 0), continue; end
             
-            [currentData, ~, err] = load_and_process_image(fullfile(path, file), minPointsEnroll);
+            % --- תיקון: קליטת התמונה המעובדת (imgMatrix) ---
+            [currentData, imgMatrix, err] = load_and_process_image(fullfile(path, file), minPointsEnroll);
             
             if ~isempty(err)
                 msgbox(err, 'שגיאה', 'error'); continue;
@@ -66,8 +72,8 @@ while true
             
             name = inputdlg('הכנס שם משתמש:', 'רישום');
             if ~isempty(name) && ~isempty(name{1})
-                % הפונקציה add_user_to_db עודכנה לחשב T_sq גם כאן
-                add_user_to_db(dbFileName, name{1}, currentData, fullfile(path, file));
+                % --- תיקון: שליחת המטריצה במקום הנתיב ---
+                add_user_to_db(dbFileName, name{1}, currentData, imgMatrix);
                 db_needs_reload = true; 
             end
             
@@ -130,10 +136,12 @@ while true
                     tmp = load(dbFileName, 'fingerprintDB');
                     currentDB = tmp.fingerprintDB;
                 catch
-                    currentDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {}, 'T_sq', {});
+                    % --- תיקון: הוספת processedImg למבנה ---
+                    currentDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {}, 'processedImg', {}, 'T_sq', {});
                 end
             else
-                currentDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {}, 'T_sq', {});
+                % --- תיקון: הוספת processedImg למבנה ---
+                currentDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {}, 'processedImg', {}, 'T_sq', {});
             end
             
             hWait = waitbar(0, 'מבצע רישום...');
@@ -147,7 +155,8 @@ while true
                 waitbar(k/numFiles, hWait, sprintf('מעבד %d/%d', k, numFiles));
                 
                 fullFilePath = fullfile(path, files{k});
-                [data, ~, err] = load_and_process_image(fullFilePath, minPointsEnroll);
+                % --- תיקון: קליטת imgMatrix ---
+                [data, imgMatrix, err] = load_and_process_image(fullFilePath, minPointsEnroll);
                 
                 if isempty(err)
                     [~, nameByUser, ~] = fileparts(files{k});
@@ -158,6 +167,8 @@ while true
                     newEntry.template = data.minutiae;
                     newEntry.descriptors = data.descriptors;
                     newEntry.imagePath = fullFilePath;
+                    % --- תיקון: שמירת התמונה במבנה ---
+                    newEntry.processedImg = imgMatrix;
                     
                     % חישוב T_sq מראש (אופטימיזציה)
                     newEntry.T_sq = sum(data.minutiae(:,1:2).^2, 2);
@@ -173,6 +184,12 @@ while true
             tempDB = tempDB(~cellfun('isempty', tempDB));
             if ~isempty(tempDB)
                 newStructs = [tempDB{:}]; 
+                
+                % וידוא שהשדות תואמים לפני המיזוג (למקרה של מאגר ישן)
+                if ~isempty(currentDB) && ~isfield(currentDB, 'processedImg')
+                    [currentDB(:).processedImg] = deal([]); 
+                end
+                
                 currentDB = [currentDB; newStructs(:)];
                 
                 fingerprintDB = currentDB;
@@ -272,12 +289,22 @@ while true
                     
                     % צד ימין: תמונה
                     subplot(1, 2, 1);
-                    if isfield(selectedUser, 'imagePath') && exist(selectedUser.imagePath, 'file')
-                        imshow(imread(selectedUser.imagePath));
-                        title('תמונה מקורית', 'FontSize', 12);
+                    % --- תיקון: בדיקה אם יש תמונה שמורה במאגר קודם ---
+                    imgToShow = [];
+                    if isfield(selectedUser, 'processedImg') && ~isempty(selectedUser.processedImg)
+                        imgToShow = selectedUser.processedImg;
+                        titleStr = 'תמונה מעובדת (מתוך המאגר)';
+                    elseif isfield(selectedUser, 'imagePath') && exist(selectedUser.imagePath, 'file')
+                        imgToShow = imread(selectedUser.imagePath);
+                        titleStr = 'תמונה מקורית (מהקובץ)';
+                    end
+                    
+                    if ~isempty(imgToShow)
+                        imshow(imgToShow);
+                        title(titleStr, 'FontSize', 12);
                     else
                         axis off; 
-                        text(0.5, 0.5, 'קובץ המקור לא נמצא', ...
+                        text(0.5, 0.5, 'תמונה לא זמינה', ...
                              'HorizontalAlignment', 'center', 'Color', 'r', 'FontSize', 14);
                     end
                     
