@@ -77,5 +77,26 @@ function cfg = get_config()
     % הנוסחאות לחישוב הציון הסופי.
     cfg.score.sigma_dist = 10;     % סטיית התקן לחישוב ציון המרחק (ככל שהנקודה קרובה יותר למקור, הציון עולה).
     cfg.score.sigma_ang_rad = 0.5; % סטיית התקן לציון הזווית.
-    cfg.score.sigma_desc = 45;     % סטיית התקן לדמיון בין הדסקריפטורים (השכנים של הנקודה).
+    cfg.score.sigma_desc = 45; % סטיית התקן לדמיון בין הדסקריפטורים (השכנים של הנקודה).
+
+   try
+        configDir = fileparts(mfilename('fullpath'));
+        userConfigFile = fullfile(configDir, 'user_settings.mat');
+        
+        if isfile(userConfigFile)
+            userData = load(userConfigFile, 'savedCfg');
+            if isfield(userData, 'savedCfg')
+                saved = userData.savedCfg;
+                % מיזוג חכם: מעדכן רק את מה שקיים בקובץ השמור
+                if isfield(saved, 'gabor'), cfg.gabor = saved.gabor; end
+                if isfield(saved, 'roi'), cfg.roi = saved.roi; end
+                if isfield(saved, 'enroll'), cfg.enroll = saved.enroll; end
+                if isfield(saved, 'match'), cfg.match = saved.match; end
+                if isfield(saved, 'filter'), cfg.filter = saved.filter; end
+                if isfield(saved, 'binarize'), cfg.binarize = saved.binarize; end
+            end
+        end
+    catch
+        % במקרה של תקלה בטעינה, ממשיכים עם ברירת המחדל
+    end
 end

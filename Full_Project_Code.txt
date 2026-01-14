@@ -462,20 +462,22 @@ end
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
 % ========================================================================
 
-function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img, do_viz)
-    % process_fingerprint - גרסה עם חילוץ מונחה מסיכה
+function [template, roiMask, rawMinutiae, descriptors, img] = process_fingerprint(img, do_viz)
+    % process_fingerprint - הגרסה הרגילה
     
     if nargin < 2, do_viz = false; end
-    cfg = get_config();
+    cfg = get_config(); % טעינת הגדרות (כולל מה שנשמר בקובץ המשתמש)
     debug = struct();
     
-    % 1. המרה לאפור ונרמול ראשוני
+    % 1. המרה לאפור
     if size(img, 3) == 3, img = rgb2gray(img); end
     img = im2double(img);
     img = adapthisteq(img, 'ClipLimit', 0.02);
     
-    % --- שלב החיתוך החכם ---
-    fullMask = get_roi_mask(img);
+    % --- שינוי: שליחת cfg למסיכה ---
+    fullMask = get_roi_mask(img, cfg);
+    % -------------------------------
+    
     [r, c] = find(fullMask);
     if isempty(r)
         r1=1; r2=size(img,1); c1=1; c2=size(img,2);
@@ -493,7 +495,7 @@ function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img
     debug.imgGray = img;
     debug.roiMask = roiMask;
     
-    % 2-7. עיבוד תמונה (Gabor, בינאריזציה ושלד)
+    % 2-7. עיבוד
     [normim, ~, ~] = ridgesegment(img, cfg.gabor.blk_sze, cfg.gabor.thresh);
     orientim = ridgeorient(normim, cfg.gabor.grad_sigma, cfg.gabor.block_sigma, cfg.gabor.smooth_sigma);
     [freqim, ~] = ridgefreq(normim, roiMask, orientim, cfg.gabor.freq_blk, ...
@@ -501,7 +503,12 @@ function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img
     
     enhancedImg = ridgefilter(normim, orientim, freqim, cfg.gabor.kx, cfg.gabor.ky, 0);
     
-    binaryImg = enhancedImg > 0;
+    binOffset = 0;
+    if isfield(cfg, 'binarize') && isfield(cfg.binarize, 'sens')
+        binOffset = cfg.binarize.sens - 0.5; 
+    end
+    binaryImg = enhancedImg > binOffset;
+    
     binaryImg = binaryImg & roiMask; 
     binaryImg = bwareaopen(binaryImg, 10);
     binaryImg = ~bwareaopen(~binaryImg, 10);
@@ -515,30 +522,23 @@ function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint(img
     
     debug.skeletonImg = skeletonImg;
     
-    % --- שלב התיקון: יצירת מסיכה קפדנית לפני החילוץ ---
-    % אנו מכווצים את המסיכה ב-12 פיקסלים כדי לזרוק את הקצוות הרועשים
-   % --- שלב התיקון: יצירת מסיכה קפדנית לפני החילוץ ---
-   % שימוש בערך מהקונפיגורציה
-   erosionVal = 12; % ברירת מחדל
-   if isfield(cfg.roi, 'strict_erosion')
-       erosionVal = cfg.roi.strict_erosion;
-   end
-   seStrict = strel('disk', erosionVal);
+    % מסיכה קפדנית
+    erosionVal = 12; 
+    if isfield(cfg.roi, 'strict_erosion'), erosionVal = cfg.roi.strict_erosion; end
+    seStrict = strel('disk', erosionVal);
     strictMask = imerode(roiMask, seStrict);
     
-    % 8. חילוץ נקודות - שולחים את המסיכה הקפדנית!
-    % הנקודות שיוחזרו מכאן כבר יהיו מסוננות ראשונית
+    % 8. חילוץ
     rawMinutiae = extract_minutiae_features(skeletonImg, strictMask, cfg);
     debug.rawMinutiae = rawMinutiae;
     
-    % 9. סינון סופי ומתקדם (בודק גם גיאומטריה וגם גבול וירטואלי נוסף ליתר ביטחון)
+    % 9. סינון
     template = filter_minutiae(rawMinutiae, strictMask, cfg);
     debug.finalTemplate = template;
     
     % 10. דסקריפטורים
     descriptors = compute_descriptors(template, cfg);
     
-    % --- ויזואליזציה ---
     if do_viz
         visualize_pipeline(debug, cfg);
     end
@@ -551,28 +551,26 @@ end
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src
 % ========================================================================
 
-function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint_GUI(img, app)
-    % process_fingerprint_GUI - מותאם ללוגיקה המדויקת + 7 תחנות (כולל מסיכה)
+function [template, roiMask, rawMinutiae, descriptors, img] = process_fingerprint_GUI(img, app)
+    % process_fingerprint_GUI - גרסה מעודכנת שמעבירה הגדרות למסיכה
     
-    % אתחול משתנים
     template = []; roiMask = []; rawMinutiae = []; descriptors = [];
     
     try
         if isempty(app.CurrentConfig), error('Config is empty!'); end
         cfg = app.CurrentConfig;
         
-        % =========================================================
-        % תחנה 1: עיבוד מקדים + חיתוך חכם
-        % =========================================================
-        app.lblStatus.Text = 'Step 1/7: Preprocessing...'; drawnow;
+        updateStatus(app, 'Step 1/7: Preprocessing...');
         
-        % 1. המרה לאפור ונרמול ראשוני
+        % 1. המרה לאפור
         if size(img, 3) == 3, img = rgb2gray(img); end
         img = im2double(img);
         img = adapthisteq(img, 'ClipLimit', 0.02);
         
-        % --- שלב החיתוך החכם ---
-        fullMask = get_roi_mask(img);
+        % --- שינוי קריטי: שולחים את cfg לפונקציה get_roi_mask ---
+        fullMask = get_roi_mask(img, cfg);
+        % -------------------------------------------------------
+        
         [r, c] = find(fullMask);
         if isempty(r)
             r1=1; r2=size(img,1); c1=1; c2=size(img,2);
@@ -584,141 +582,127 @@ function [template, roiMask, rawMinutiae, descriptors] = process_fingerprint_GUI
             c2 = min(size(img,2), max(c) + padding);
         end
         
-        % חיתוך בפועל
         img = img(r1:r2, c1:c2);
         roiMask = fullMask(r1:r2, c1:c2);
         
-        % >> ציור תחנה 1: מקור
-        plot_step(app.axStep1, img, '1. Original');
+        plotIfExist(app, 'axStep1', img, '1. Original');
         
-        % =========================================================
-        % תחנה 2: מסיכה (ROI Mask)
-        % =========================================================
-        app.lblStatus.Text = 'Step 2/7: Segmentation...'; drawnow;
-        
-        % חישוב סגמנטציה (Ridge Segment)
+        % 2. סגמנטציה
+        updateStatus(app, 'Step 2/7: Segmentation...');
         [normim, ~, ~] = ridgesegment(img, cfg.gabor.blk_sze, cfg.gabor.thresh);
-        
-        % >> ציור תחנה 2: המסיכה
-        plot_step(app.axStep2, roiMask, '2. ROI Mask');
+        plotIfExist(app, 'axStep2', roiMask, '2. ROI Mask');
 
-        % =========================================================
-        % תחנה 3: Gabor Filter
-        % =========================================================
-        app.lblStatus.Text = 'Step 3/7: Gabor Filtering...'; drawnow;
-        
+        % 3. Gabor
+        updateStatus(app, 'Step 3/7: Gabor Filtering...');
         orientim = ridgeorient(normim, cfg.gabor.grad_sigma, cfg.gabor.block_sigma, cfg.gabor.smooth_sigma);
         [freqim, ~] = ridgefreq(normim, roiMask, orientim, cfg.gabor.freq_blk, ...
                                 cfg.gabor.freq_wind, cfg.gabor.min_wl, cfg.gabor.max_wl);
         
         enhancedImg = ridgefilter(normim, orientim, freqim, cfg.gabor.kx, cfg.gabor.ky, 0);
         
-        binaryImg = enhancedImg > 0;
+        binOffset = 0;
+        if isfield(cfg, 'binarize') && isfield(cfg.binarize, 'sens')
+            binOffset = cfg.binarize.sens - 0.5; 
+        end
+        
+        binaryImg = enhancedImg > binOffset; 
         binaryImg = binaryImg & roiMask; 
         binaryImg = bwareaopen(binaryImg, 10);
         binaryImg = ~bwareaopen(~binaryImg, 10);
         
-        % >> ציור תחנה 3: Gabor
-        plot_step(app.axStep3, enhancedImg, '3. Gabor Filtered');
+        plotIfExist(app, 'axStep3', enhancedImg, '3. Gabor Filtered');
 
-        % =========================================================
-        % תחנה 4: שלד (Skeleton)
-        % =========================================================
-        app.lblStatus.Text = 'Step 4/7: Skeletonization...'; drawnow;
-        
+        % 4. שלד
+        updateStatus(app, 'Step 4/7: Skeletonization...');
         skeletonImg = bwmorph(binaryImg, 'thin', Inf);
         skeletonImg = bwmorph(skeletonImg, 'clean');
         skeletonImg = bwmorph(skeletonImg, 'diag');
         skeletonImg = bwmorph(skeletonImg, 'spur', 5); 
         
-        % >> ציור תחנה 4: שלד
-        plot_step(app.axStep4, ~skeletonImg, '4. Skeleton');
+        plotIfExist(app, 'axStep4', ~skeletonImg, '4. Skeleton');
 
-        % =========================================================
-        % תחנה 5: חילוץ גולמי (Raw Minutiae)
-        % =========================================================
-        app.lblStatus.Text = 'Step 5/7: Raw Extraction...'; drawnow;
+        % 5. חילוץ
+        updateStatus(app, 'Step 5/7: Raw Extraction...');
         
-        % --- יצירת מסיכה קפדנית (Strict Mask) ---
         erosionVal = 12;
-        if isfield(cfg.roi, 'strict_erosion')
-            erosionVal = cfg.roi.strict_erosion;
-        end
+        if isfield(cfg.roi, 'strict_erosion'), erosionVal = cfg.roi.strict_erosion; end
         seStrict = strel('disk', erosionVal);
         strictMask = imerode(roiMask, seStrict);
         
-        % חילוץ עם המסיכה הקפדנית
         rawMinutiae = extract_minutiae_features(skeletonImg, strictMask, cfg);
         
-        % >> ציור תחנה 5: נקודות גולמיות
-        plot_step(app.axStep5, ~skeletonImg, ['5. Raw Points (' num2str(size(rawMinutiae,1)) ')']);
-        hold(app.axStep5, 'on');
-        if ~isempty(rawMinutiae)
-            plot(app.axStep5, rawMinutiae(:,1), rawMinutiae(:,2), 'b.', 'MarkerSize', 8);
+        if isprop(app, 'axStep5') && isvalid(app.axStep5)
+            plot_step(app.axStep5, ~skeletonImg, ['5. Raw (' num2str(size(rawMinutiae,1)) ')']);
+            hold(app.axStep5, 'on');
+            if ~isempty(rawMinutiae)
+                plot(app.axStep5, rawMinutiae(:,1), rawMinutiae(:,2), 'b.', 'MarkerSize', 8);
+            end
+            hold(app.axStep5, 'off');
         end
-        hold(app.axStep5, 'off');
 
-        % =========================================================
-        % תחנה 6: תוצאה סופית (Final Result)
-        % =========================================================
-        app.lblStatus.Text = 'Step 6/7: Final Filtering...'; drawnow;
+        % 6. סינון סופי
+        updateStatus(app, 'Step 6/7: Final Filtering...');
         
-        % סינון סופי וחישוב דסקריפטורים
         template = filter_minutiae(rawMinutiae, strictMask, cfg);
         descriptors = compute_descriptors(template, cfg);
         numPoints = size(template, 1);
         
-        % >> ציור תחנה 6: תוצאה סופית
-        plot_step(app.axStep6, ~skeletonImg, ['6. Final Result (' num2str(numPoints) ')']);
-        hold(app.axStep6, 'on');
-        
-        % א. גבול חכם (מגנטה)
-        if size(rawMinutiae, 1) >= 3
-            try
-                X = rawMinutiae(:,1); Y = rawMinutiae(:,2);
-                idx = sub2ind(size(roiMask), round(Y), round(X));
-                valid = roiMask(idx);
-                validPts = [X(valid), Y(valid)];
-                
-                shrinkVal = 0.5;
-                if isfield(cfg.filter, 'boundary_shrink_factor'), shrinkVal = cfg.filter.boundary_shrink_factor; end
-                
-                k = boundary(validPts(:,1), validPts(:,2), shrinkVal);
-                plot(app.axStep6, validPts(k,1), validPts(k,2), 'm-', 'LineWidth', 2); 
-            catch
+        if isprop(app, 'axStep6') && isvalid(app.axStep6)
+            plot_step(app.axStep6, ~skeletonImg, ['6. Final (' num2str(numPoints) ')']);
+            hold(app.axStep6, 'on');
+            
+            % א. גבול חכם
+            if size(rawMinutiae, 1) >= 3
+                try
+                    shrinkVal = 0.5;
+                    if isfield(cfg.filter, 'boundary_shrink_factor'), shrinkVal = cfg.filter.boundary_shrink_factor; end
+                    
+                    X = round(rawMinutiae(:,1)); Y = round(rawMinutiae(:,2));
+                    validIdx = (X>=1 & X<=size(roiMask,2) & Y>=1 & Y<=size(roiMask,1));
+                    validPts = rawMinutiae(validIdx, 1:2);
+                    
+                    k = boundary(validPts(:,1), validPts(:,2), shrinkVal);
+                    plot(app.axStep6, validPts(k,1), validPts(k,2), 'm-', 'LineWidth', 2); 
+                catch
+                end
             end
+            
+            % ב. נקודות
+            if ~isempty(template)
+                termIdx = template(:,3) == 1;
+                plot(app.axStep6, template(termIdx, 1), template(termIdx, 2), 'ro', 'LineWidth', 1.5, 'MarkerSize', 6);
+                bifIdx = template(:,3) == 3;
+                plot(app.axStep6, template(bifIdx, 1), template(bifIdx, 2), 'gs', 'LineWidth', 1.5, 'MarkerSize', 6);
+            end
+            hold(app.axStep6, 'off');
         end
         
-        % ב. נקודות סופיות (אדום/ירוק)
-        if ~isempty(template)
-            termIdx = template(:,3) == 1;
-            plot(app.axStep6, template(termIdx, 1), template(termIdx, 2), 'ro', 'LineWidth', 1.5, 'MarkerSize', 6);
-            bifIdx = template(:,3) == 3;
-            plot(app.axStep6, template(bifIdx, 1), template(bifIdx, 2), 'gs', 'LineWidth', 1.5, 'MarkerSize', 6);
-        end
-        hold(app.axStep6, 'off');
-
-        app.lblStatus.Text = 'Done.';
+        updateStatus(app, 'Done.');
         
     catch err
-        app.lblStatus.Text = 'Error';
-        uialert(app.UIFigure, ['Processing Error: ' err.message], 'Error');
-        disp(err.message);
+        updateStatus(app, 'Error');
+        disp(['Processing Error: ' err.message]);
     end
 end
 
-% ========================================================
-% פונקציית עזר פנימית לציור (נמצאת רק פעם אחת בסוף!)
-% ========================================================
+% פונקציות עזר (אותן פונקציות שהיו קודם)
+function updateStatus(app, text)
+    if isprop(app, 'lblStatus') && isvalid(app.lblStatus)
+        app.lblStatus.Text = text;
+        drawnow limitrate;
+    end
+end
+function plotIfExist(app, axName, img, titleText)
+    if isprop(app, axName) && isvalid(app.(axName))
+        plot_step(app.(axName), img, titleText);
+    end
+end
 function plot_step(ax, img, titleText)
     imagesc(ax, img);
     colormap(ax, 'gray');
     axis(ax, 'image'); 
     axis(ax, 'off');
-    
-    % רקע שקוף למניעת שוליים לבנים
     set(ax, 'Color', 'none'); 
-    
     title(ax, titleText, 'Interpreter', 'none');
 end
 
@@ -808,7 +792,28 @@ function cfg = get_config()
     % הנוסחאות לחישוב הציון הסופי.
     cfg.score.sigma_dist = 10;     % סטיית התקן לחישוב ציון המרחק (ככל שהנקודה קרובה יותר למקור, הציון עולה).
     cfg.score.sigma_ang_rad = 0.5; % סטיית התקן לציון הזווית.
-    cfg.score.sigma_desc = 45;     % סטיית התקן לדמיון בין הדסקריפטורים (השכנים של הנקודה).
+    cfg.score.sigma_desc = 45; % סטיית התקן לדמיון בין הדסקריפטורים (השכנים של הנקודה).
+
+   try
+        configDir = fileparts(mfilename('fullpath'));
+        userConfigFile = fullfile(configDir, 'user_settings.mat');
+        
+        if isfile(userConfigFile)
+            userData = load(userConfigFile, 'savedCfg');
+            if isfield(userData, 'savedCfg')
+                saved = userData.savedCfg;
+                % מיזוג חכם: מעדכן רק את מה שקיים בקובץ השמור
+                if isfield(saved, 'gabor'), cfg.gabor = saved.gabor; end
+                if isfield(saved, 'roi'), cfg.roi = saved.roi; end
+                if isfield(saved, 'enroll'), cfg.enroll = saved.enroll; end
+                if isfield(saved, 'match'), cfg.match = saved.match; end
+                if isfield(saved, 'filter'), cfg.filter = saved.filter; end
+                if isfield(saved, 'binarize'), cfg.binarize = saved.binarize; end
+            end
+        end
+    catch
+        % במקרה של תקלה בטעינה, ממשיכים עם ברירת המחדל
+    end
 end
 
 
@@ -818,12 +823,15 @@ end
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\01_Enhancement
 % ========================================================================
 
-function mask = get_roi_mask(img)
-    % get_roi_mask - חישוב מסיכה עם פרמטר הרחבה דינאמי
+function mask = get_roi_mask(img, cfg)
+    % get_roi_mask - גרסה מתוקנת שמקבלת הגדרות (cfg) מבחוץ
     
-    cfg = get_config();
+    % אם לא נשלח קונפיג (למשל הרצה ידנית), טען ברירת מחדל
+    if nargin < 2
+        cfg = get_config();
+    end
     
-    % 1. זיהוי טקסטורה ע"י סטיית תקן
+    % 1. זיהוי טקסטורה
     textureMap = stdfilt(img, true(11));
     
     % 2. סף אוטומטי
@@ -833,26 +841,25 @@ function mask = get_roi_mask(img)
     % 3. ניקוי ראשוני
     mask = bwareaopen(mask, 500); 
     
-    % 4. עיבוד מורפולוגי ליצירת גוש אחיד
+    % 4. עיבוד מורפולוגי
     seClose = strel('disk', 15); 
     mask = imclose(mask, seClose);
     mask = imfill(mask, 'holes');
     
-    % 5. הרחבת המסיכה (Dilation) - לפי הפרמטר בקונפיג
-    % בדיקה אם הפרמטר קיים, אחרת ברירת מחדל 10
+    % 5. הרחבת המסיכה - משתמש בערך שהתקבל מהאפליקציה!
     if isfield(cfg, 'roi') && isfield(cfg.roi, 'mask_dilation')
         dilationRadius = cfg.roi.mask_dilation;
     else
         dilationRadius = 10; 
     end
     
-    % יצירת אלמנט ההרחבה בגודל המבוקש
-    seDilate = strel('disk', dilationRadius);
-    mask = imdilate(mask, seDilate);
+    if dilationRadius > 0
+        seDilate = strel('disk', dilationRadius);
+        mask = imdilate(mask, seDilate);
+    end
     
-    % 6. וידוא שנשאר רק הגוש הגדול ביותר
+    % 6. וידוא שנשאר רק הגוש הגדול
     mask = bwareafilt(mask, 1);
-    
     mask = logical(mask);
 end
 
@@ -1608,8 +1615,10 @@ end
 % ========================================================================
 
 function [fingerData, processedImg, errorMsg] = load_and_process_image(fullPath, minPoints)
+    % load_and_process_image - טוען תמונה ומחזיר את הנתונים + התמונה החתוכה
+    
     fingerData = []; 
-    processedImg = []; % משתנה לתמונה המעובדת
+    processedImg = []; 
     errorMsg = '';
     
     if nargin < 2, minPoints = 12; end 
@@ -1618,7 +1627,7 @@ function [fingerData, processedImg, errorMsg] = load_and_process_image(fullPath,
         % 1. קריאת התמונה המקורית
         rawImg = imread(fullPath);
         
-        % 2. הפעלת האלגוריתם - שים לב שאנחנו מבקשים כעת 5 משתנים!
+        % 2. הפעלת האלגוריתם (כעת process_fingerprint מחזירה 5 משתנים!)
         [template, ~, ~, descriptors, processedImg] = process_fingerprint(rawImg, false);
         
         % 3. בדיקת איכות
@@ -1690,39 +1699,41 @@ end
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\04_Database
 % ========================================================================
 
-function add_user_to_db(fname, name, dataStruct, imgPath)
-    % add_user_to_db - הוספת משתמש עם אופטימיזציה לחישוב מרחקים
-    
+function add_user_to_db(fname, name, dataStruct, processedImg)
+    % add_user_to_db - גרסה מעודכנת: שומרת את התמונה החתוכה במאגר
+    % הקלט 'processedImg' הוא התמונה עצמה (מטריצה), לא נתיב לקובץ.
+
     % טעינת המאגר הקיים או יצירת חדש
     if isfile(fname)
         loaded = load(fname, 'fingerprintDB');
         fingerprintDB = loaded.fingerprintDB;
-        
-        % תיקון תאימות לאחור (אם המאגר ישן וחסרים שדות)
-        if ~isfield(fingerprintDB, 'T_sq')
-             [fingerprintDB(:).T_sq] = deal([]); 
-        end
     else
-        fingerprintDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {}, 'T_sq', {});
+        % מבנה מעודכן: במקום imagePath יש לנו processedImg
+        fingerprintDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'processedImg', {}, 'T_sq', {});
     end
-    
+
     % בניית הרשומה החדשה
     newEntry.name = name;
-    newEntry.template = dataStruct.minutiae;        
-    newEntry.descriptors = dataStruct.descriptors; 
-    newEntry.imagePath = imgPath;
-    
-    % --- אופטימיזציה קריטית ---
-    % חישוב סכום הריבועים מראש (חוסך זמן יקר בזמן הזיהוי)
+    newEntry.template = dataStruct.minutiae;
+    newEntry.descriptors = dataStruct.descriptors;
+    % --- שינוי קריטי: שמירת התמונה החתוכה בתוך המאגר ---
+    newEntry.processedImg = processedImg;
+    % -------------------------------------------------
+
+    % חישוב T_sq (אופטימיזציה לזיהוי)
     newEntry.T_sq = sum(dataStruct.minutiae(:,1:2).^2, 2);
-    % --------------------------
-    
-    % הוספה ושמירה
-    fingerprintDB(end+1) = newEntry;
+
+    % הוספה למערך
+    if isempty(fingerprintDB)
+        fingerprintDB = newEntry;
+    else
+        fingerprintDB(end+1) = newEntry;
+    end
+
+    % שמירה לקובץ
     save(fname, 'fingerprintDB');
-    
+
     disp(['>> משתמש נוסף למאגר: ' name]);
-    msgbox(['המשתמש ' name ' נשמר בהצלחה!'], 'אישור');
 end
 
 
