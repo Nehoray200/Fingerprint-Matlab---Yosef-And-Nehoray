@@ -3,7 +3,7 @@ clc; clear;
 setup_project(); % קריאה לפונקציה מהתיקייה הראשית
 
 %% === הגדרות משתמש ===
-USE_FIXED_FILE = true; 
+USE_FIXED_FILE = false; 
 
 % הגדר כאן רק את שם הקובץ
 %FIXED_FILENAME = '101_7.tif'; 101_6.tif 108_5.tif 101_6.tif 106_4.tif 
