@@ -1,11 +1,28 @@
 function cfg = get_config()
-    % get_config - קובץ הגדרות מרכזי (מעודכן עם שליטה בגבולות)
+    % get_config - קובץ הגדרות מרכזי (מעודכן עם נתיב שמירה ל-src/04_Database)
     % פונקציה זו מחזירה מבנה (struct) המכיל את כל הפרמטרים של המערכת.
     % שינוי ערכים כאן ישפיע על כל שלבי העיבוד והזיהוי.
     
     %% 1. הגדרות מערכת וקבצים
-    % השם של הקובץ בו יישמרו המשתמשים הרשומים (הדאטה-בייס)
-    cfg.db_filename = 'fingerprint_database.mat';
+    
+    % --- שינוי: חישוב נתיב חכם לתיקיית Database ---
+    
+    % 1. משיג את המיקום של הקובץ הזה (נמצא ב-src/00_Config)
+    currentFileDir = fileparts(mfilename('fullpath'));
+    
+    % 2. עולה רמה אחת למעלה (לתיקיית src)
+    srcDir = fileparts(currentFileDir);
+    
+    % 3. בונה את הנתיב לתיקיית היעד
+    targetFolder = fullfile(srcDir, '04_Database');
+    
+    % 4. יצירת התיקייה אם היא לא קיימת (קריטי למניעת שגיאות!)
+    if ~exist(targetFolder, 'dir')
+        mkdir(targetFolder);
+    end
+    
+    % 5. הגדרת הנתיב המלא לקובץ הדאטה-בייס
+    cfg.db_filename = fullfile(targetFolder, 'fingerprint_database.mat');
     
     %% 2. הגדרות Gabor (שיפור תמונה מתקדם)
     % פילטר Gabor הוא הכלי המרכזי שמנקה את התמונה ומדגיש את הרכסים (Ridges).
@@ -77,5 +94,27 @@ function cfg = get_config()
     % הנוסחאות לחישוב הציון הסופי.
     cfg.score.sigma_dist = 10;     % סטיית התקן לחישוב ציון המרחק (ככל שהנקודה קרובה יותר למקור, הציון עולה).
     cfg.score.sigma_ang_rad = 0.5; % סטיית התקן לציון הזווית.
-    cfg.score.sigma_desc = 45;     % סטיית התקן לדמיון בין הדסקריפטורים (השכנים של הנקודה).
+    cfg.score.sigma_desc = 45; % סטיית התקן לדמיון בין הדסקריפטורים (השכנים של הנקודה).
+
+    %% טעינת הגדרות משתמש (שנשמרו ע"י ה-App)
+   try
+        configDir = fileparts(mfilename('fullpath'));
+        userConfigFile = fullfile(configDir, 'user_settings.mat');
+        
+        if isfile(userConfigFile)
+            userData = load(userConfigFile, 'savedCfg');
+            if isfield(userData, 'savedCfg')
+                saved = userData.savedCfg;
+                % מיזוג חכם: מעדכן רק את מה שקיים בקובץ השמור
+                if isfield(saved, 'gabor'), cfg.gabor = saved.gabor; end
+                if isfield(saved, 'roi'), cfg.roi = saved.roi; end
+                if isfield(saved, 'enroll'), cfg.enroll = saved.enroll; end
+                if isfield(saved, 'match'), cfg.match = saved.match; end
+                if isfield(saved, 'filter'), cfg.filter = saved.filter; end
+                if isfield(saved, 'binarize'), cfg.binarize = saved.binarize; end
+            end
+        end
+    catch
+        % במקרה של תקלה בטעינה, ממשיכים עם ברירת המחדל
+    end
 end
