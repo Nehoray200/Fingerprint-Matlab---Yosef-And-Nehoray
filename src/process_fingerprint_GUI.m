@@ -1,8 +1,8 @@
-function [template, roiMask, rawMinutiae, descriptors, img] = process_fingerprint_GUI(img, app)
+function [template, roiMask, rawMinutiae, descriptors, img, debug] = process_fingerprint_GUI(img, app)
     % process_fingerprint_GUI - מעטפת גרפית (Wrapper)
-    % פונקציה זו משתמשת ב-process_fingerprint ללוגיקה, ומבצעת רק את הציור.
+    % עדכון: כעת מחזירה גם את 'debug' כפלט שישי כדי לאפשר גישה לתמונות ביניים
     
-    template = []; roiMask = []; rawMinutiae = []; descriptors = [];
+    template = []; roiMask = []; rawMinutiae = []; descriptors = []; debug = struct();
     
     try
         if isempty(app.CurrentConfig), error('Config is empty!'); end
@@ -12,6 +12,7 @@ function [template, roiMask, rawMinutiae, descriptors, img] = process_fingerprin
         statusFcn = @(txt) updateStatus(app, txt);
         
         % --- קריאה למנוע הראשי ---
+        % המנוע מחזיר את debug, ואנחנו מעבירים אותו החוצה
         [template, roiMask, rawMinutiae, descriptors, img, debug] = ...
             process_fingerprint(img, cfg, statusFcn);
         % -------------------------
@@ -90,13 +91,11 @@ function updateStatus(app, text)
         drawnow limitrate;
     end
 end
-
 function plotIfExist(app, axName, img, titleText)
     if isprop(app, axName) && isvalid(app.(axName))
         plot_step(app.(axName), img, titleText);
     end
 end
-
 function plot_step(ax, img, titleText)
     imagesc(ax, img);
     colormap(ax, 'gray');

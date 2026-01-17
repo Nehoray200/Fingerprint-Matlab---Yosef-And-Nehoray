@@ -1,118 +1,109 @@
 function run_mass_identification(app, fileList, basePath)
-    % run_mass_identification - גרסה המקבלת רשימת קבצים ספציפית
-    % app: האפליקציה (לעדכון גרפים)
-    % fileList: רשימת שמות הקבצים (Cell Array)
-    % basePath: הנתיב לתיקייה בה הם נמצאים
+    % run_mass_identification - גרסה עם פס טעינה מותאם אישית (Custom Progress Bar)
     
     totalFiles = length(fileList);
     
-    % 1. איפוס הטבלה והמד
+    % 1. איפוס והגדרת סגנונות
     app.tblMassResults.Data = {};
-    app.gaugeProgress.Value = 0; 
     
-    % משתנים לסטטיסטיקה
+    % --- איפוס פס הטעינה הידני ---
+    % 1. משיגים את הרוחב המקסימלי של הבר (רוחב הרקע)
+    maxWidth = app.pnlProgressBack.Position(3); 
+    % 2. מאפסים את המילוי ל-0
+    app.lblProgressFill.Position(3) = 0; 
+    
+    % עיצוב טבלה
+    removeStyle(app.tblMassResults); 
+    styleBlue = uistyle('BackgroundColor', '#3849c7', 'FontColor', '#ffffff', 'FontWeight', 'bold');
+    styleWhite = uistyle('BackgroundColor', '#ffffff', 'FontColor', '#171b26');
+    
     resultsData = {}; 
     successCount = 0;
     validCount = 0;
+    lastStyledRow = 0; 
     
-    % סף להצלחה
     threshold = 15;
     if isfield(app.CurrentConfig.match, 'pass_threshold')
         threshold = app.CurrentConfig.match.pass_threshold;
     end
     
-    % 2. הלולאה הראשית (רוצה על הרשימה שקיבלנו)
+    % 2. הלולאה הראשית
     for k = 1:totalFiles
-        filename = fileList{k}; % שליפת השם מהרשימה
+        filename = fileList{k}; 
         fullFilePath = fullfile(basePath, filename);
-        
-        % חילוץ ID (הנחה: 101_1.tif)
         nameParts = strsplit(filename, {'_', '.'});
         realID = nameParts{1};
         
-        % --- עיבוד התמונה ---
+        % עיבוד
         try
             [currentData, ~, err] = load_and_process_image(fullFilePath, app.CurrentConfig.enroll.min_minutiae);
         catch
             err = 'Critical Error';
         end
         
-        % טיפול בשגיאות ואיכות נמוכה
         if ~isempty(err)
             resultsData(end+1, :) = {filename, realID, '---', 0, 'שגיאת איכות'};
         else
             validCount = validCount + 1;
-            
-            % --- חיפוש במאגר ---
-            bestScore = 0;
-            bestName = 'Unknown';
-            
+            bestScore = 0; bestName = 'Unknown';
             for i = 1:length(app.FingerprintDB)
                 dbData.minutiae = app.FingerprintDB(i).template;
                 dbData.descriptors = app.FingerprintDB(i).descriptors;
-                
-                if isfield(app.FingerprintDB(i), 'T_sq')
-                    dbData.T_sq = app.FingerprintDB(i).T_sq;
-                end
-                
+                if isfield(app.FingerprintDB(i), 'T_sq'), dbData.T_sq = app.FingerprintDB(i).T_sq; end
                 [score, ~] = find_best_match(dbData, currentData);
-                
-                if score > bestScore
-                    bestScore = score;
-                    bestName = app.FingerprintDB(i).name;
-                end
+                if score > bestScore, bestScore = score; bestName = app.FingerprintDB(i).name; end
             end
             
-            % --- בדיקת תוצאה ---
             isMatch = (bestScore >= threshold);
-            status = 'NO MATCH';
-            
             if isMatch
                 matchParts = strsplit(bestName, {'_', '.'});
-                matchID = matchParts{1};
-                
-                if strcmp(realID, matchID)
-                    successCount = successCount + 1;
-                    status = 'V (נכון)';
+                if strcmp(realID, matchParts{1})
+                    successCount = successCount + 1; status = 'V (נכון)';
                 else
                     status = 'X (שגוי)';
                 end
             else
                 status = 'X (לא זוהה)';
             end
-            
-            % שמירת הנתונים
             resultsData(end+1, :) = {filename, realID, bestName, bestScore, status};
         end
         
-        % --- עדכון ה-Progress Bar ---
-        % מעדכנים כל 5 תמונות או אם זו התמונה האחרונה
+        % --- עדכון התצוגה (כולל הבר החדש) ---
         if mod(k, 5) == 0 || k == totalFiles
             
-            progressPercent = (k / totalFiles) * 100;
-            
-            % עדכון המד
-            app.gaugeProgress.Value = progressPercent;
-            
-            % עדכון הטבלה
             app.tblMassResults.Data = resultsData;
             
-            % עדכון הטקסט
-            app.lblMassStatus.Text = sprintf('מעבד... %.1f%% (%d/%d)', progressPercent, k, totalFiles);
+            % --- צביעת שורות ---
+            newRowsRange = (lastStyledRow + 1) : k;
+            if ~isempty(newRowsRange)
+                oddRows = newRowsRange(mod(newRowsRange, 2) == 1);
+                evenRows = newRowsRange(mod(newRowsRange, 2) == 0);
+                if ~isempty(oddRows), addStyle(app.tblMassResults, styleWhite, 'row', oddRows); end
+                if ~isempty(evenRows), addStyle(app.tblMassResults, styleBlue, 'row', evenRows); end
+                lastStyledRow = k;
+            end
+            
+            % --- עדכון הבר החדש (שינוי רוחב) ---
+            progressRatio = (k / totalFiles); % מספר בין 0 ל-1
+            newWidth = maxWidth * progressRatio; % חישוב הרוחב החדש בפיקסלים
+            app.lblProgressFill.Position(3) = newWidth; % השמת הרוחב החדש
+            
+            % עדכון טקסט
+            app.lblMassStatus.Text = sprintf('מעבד... %.0f%% (%d/%d)', progressRatio*100, k, totalFiles);
             
             drawnow limitrate; 
         end
     end
     
     % 3. סיום
-   currentAccuracy = 0;
+    currentAccuracy = 0;
     if validCount > 0
         currentAccuracy = (successCount / validCount) * 100;
     end
     
-    app.gaugeProgress.Value = 100; 
+    % מילוי מלא בסוף (ליתר ביטחון)
+    app.lblProgressFill.Position(3) = maxWidth;
     app.lblMassStatus.Text = sprintf('סיום! דיוק סופי: %.2f%%', currentAccuracy);
     
-    % === התיקון כאן: הוספנו 'Icon', 'success' ===
     uialert(app.UIFigure, 'תהליך הזיהוי ההמוני הסתיים בהצלחה.', 'הושלם', 'Icon', 'success');
 end

@@ -1,336 +1,4 @@
 % ========================================================================
-% FILENAME: main_system.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab
-% ========================================================================
-
-% ========================================================================
-% FILENAME: main_system.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab
-% ========================================================================
-
-% ========================================================================
-% מערכת ביומטרית לזיהוי טביעת אצבע - main_system.m (גרסה סופית ומתוקנת)
-% ========================================================================
-clc; clear; close all;
-
-% --- 1. הגדרת נתיבים (חכם) ---
-% קורא לפונקציה שמגדירה נתיבים יחסיים כדי שהקוד יעבוד בכל מחשב
-setup_project();
-
-% --- 2. הגדרות מערכת ---
-cfg = get_config();
-dbFileName = cfg.db_filename; 
-PASS_THRESHOLD = cfg.match.pass_threshold;
-minPointsEnroll = cfg.enroll.min_minutiae; 
-
-% --- 3. ניהול זיכרון ---
-fingerprintDB = []; 
-db_needs_reload = true; 
-
-while true
-    %% טעינת מאגר חכמה
-    if db_needs_reload
-        if isfile(dbFileName)
-            try
-                loadedData = load(dbFileName, 'fingerprintDB');
-                if isfield(loadedData, 'fingerprintDB')
-                    fingerprintDB = loadedData.fingerprintDB;
-                    disp(['>> המאגר נטען: ' num2str(length(fingerprintDB)) ' משתמשים.']);
-                end
-            catch
-                warning('שגיאה בטעינת קובץ המאגר.');
-                fingerprintDB = [];
-            end
-        else
-            fingerprintDB = [];
-        end
-        db_needs_reload = false; 
-    end
-    
-    %% תפריט ראשי
-    choice = menu('מערכת ביומטרית - תפריט ראשי', ...
-                  '1. רישום משתמש בודד', ...
-                  '2. זיהוי משתמש בודד', ...
-                  '3. רישום המוני (תיקייה)', ...
-                  '4. זיהוי המוני + סטטיסטיקה', ...
-                  '5. הצגת המאגר (מתקדם)', ...
-                  '6. יציאה');
-              
-    if choice == 6 || choice == 0
-        disp('יציאה מהמערכת.'); break;
-    end
-    
-    %% לוגיקה לפי בחירה
-    switch choice
-        
-        % === 1. רישום בודד ===
-        case 1
-            [file, path] = uigetfile({'*.tif;*.png;*.jpg', 'Fingerprint'}, 'בחר תמונה לרישום', 'data/');
-            if isequal(file, 0), continue; end
-            
-            % --- תיקון: קליטת התמונה המעובדת (imgMatrix) ---
-            [currentData, imgMatrix, err] = load_and_process_image(fullfile(path, file), minPointsEnroll);
-            
-            if ~isempty(err)
-                msgbox(err, 'שגיאה', 'error'); continue;
-            end
-            
-            name = inputdlg('הכנס שם משתמש:', 'רישום');
-            if ~isempty(name) && ~isempty(name{1})
-                % --- תיקון: שליחת המטריצה במקום הנתיב ---
-                add_user_to_db(dbFileName, name{1}, currentData, imgMatrix);
-                db_needs_reload = true; 
-            end
-            
-        % === 2. זיהוי בודד ===
-        case 2
-            if isempty(fingerprintDB), msgbox('המאגר ריק.', 'שגיאה', 'error'); continue; end
-            
-            [file, path] = uigetfile({'*.tif;*.png;*.jpg', 'Fingerprint'}, 'בחר תמונה לזיהוי', 'data/');
-            if isequal(file, 0), continue; end
-            
-            [currentData, currentImg, err] = load_and_process_image(fullfile(path, file), minPointsEnroll);
-            
-            if ~isempty(err)
-                msgbox(err, 'שגיאה', 'error'); continue;
-            end
-            
-            % תהליך החיפוש
-            hWait = waitbar(0, 'מזהה...');
-            bestScore = 0; bestName = 'לא ידוע'; bestTemplate = []; bestAligned = [];
-            
-            for i = 1:length(fingerprintDB)
-                waitbar(i/length(fingerprintDB), hWait);
-                dbData.minutiae = fingerprintDB(i).template;
-                dbData.descriptors = fingerprintDB(i).descriptors;
-                
-                % בדיקת אופטימיזציה (אם קיימת במאגר)
-                if isfield(fingerprintDB(i), 'T_sq')
-                    dbData.T_sq = fingerprintDB(i).T_sq;
-                end
-                
-                % --- תיקון: הפונקציה מחזירה רק 2 ערכים כעת ---
-                [score, aligned] = find_best_match(dbData, currentData);
-                
-                if score > bestScore
-                    bestScore = score;
-                    bestName = fingerprintDB(i).name;
-                    bestTemplate = fingerprintDB(i).template;
-                    bestAligned = aligned;
-                end
-            end
-            close(hWait);
-            
-            if bestScore >= PASS_THRESHOLD
-                msgbox(['זוהה: ' bestName ' (ציון: ' num2str(bestScore) ')'], 'הצלחה');
-                visualize_match_result(currentImg, bestTemplate, bestAligned, bestName, bestScore);
-            else
-                msgbox(['לא נמצאה התאמה. הציון הכי גבוה: ' num2str(bestScore)], 'כישלון', 'error');
-            end
-            
-        % === 3. רישום המוני (אופטימלי) ===
-        case 3
-            [files, path] = uigetfile({'*.tif;*.png;*.jpg', 'Images'}, 'בחר תמונות', 'data/', 'MultiSelect', 'on');
-            if isequal(files, 0), continue; end
-            if ischar(files), files = {files}; end
-            
-            % טעינת המאגר הקיים
-            currentDB = [];
-            if isfile(dbFileName)
-                try
-                    tmp = load(dbFileName, 'fingerprintDB');
-                    currentDB = tmp.fingerprintDB;
-                catch
-                    % --- תיקון: הוספת processedImg למבנה ---
-                    currentDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {}, 'processedImg', {}, 'T_sq', {});
-                end
-            else
-                % --- תיקון: הוספת processedImg למבנה ---
-                currentDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'imagePath', {}, 'processedImg', {}, 'T_sq', {});
-            end
-            
-            hWait = waitbar(0, 'מבצע רישום...');
-            numFiles = length(files);
-            
-            % --- תיקון: שימוש ב-Cell Array למניעת הקצאת זיכרון איטית ---
-            tempDB = cell(numFiles, 1); 
-            cnt = 0;
-            
-            for k = 1:numFiles
-                waitbar(k/numFiles, hWait, sprintf('מעבד %d/%d', k, numFiles));
-                
-                fullFilePath = fullfile(path, files{k});
-                % --- תיקון: קליטת imgMatrix ---
-                [data, imgMatrix, err] = load_and_process_image(fullFilePath, minPointsEnroll);
-                
-                if isempty(err)
-                    [~, nameByUser, ~] = fileparts(files{k});
-                    
-                    % בניית המבנה
-                    newEntry = struct();
-                    newEntry.name = nameByUser;
-                    newEntry.template = data.minutiae;
-                    newEntry.descriptors = data.descriptors;
-                    newEntry.imagePath = fullFilePath;
-                    % --- תיקון: שמירת התמונה במבנה ---
-                    newEntry.processedImg = imgMatrix;
-                    
-                    % חישוב T_sq מראש (אופטימיזציה)
-                    newEntry.T_sq = sum(data.minutiae(:,1:2).^2, 2);
-                    
-                    % שמירה לתא במערך הזמני
-                    tempDB{k} = newEntry;
-                    cnt = cnt + 1;
-                end
-            end
-            close(hWait);
-            
-            % מיזוג למאגר הראשי ושמירה בפעולה אחת
-            tempDB = tempDB(~cellfun('isempty', tempDB));
-            if ~isempty(tempDB)
-                newStructs = [tempDB{:}]; 
-                
-                % וידוא שהשדות תואמים לפני המיזוג (למקרה של מאגר ישן)
-                if ~isempty(currentDB) && ~isfield(currentDB, 'processedImg')
-                    [currentDB(:).processedImg] = deal([]); 
-                end
-                
-                currentDB = [currentDB; newStructs(:)];
-                
-                fingerprintDB = currentDB;
-                save(dbFileName, 'fingerprintDB');
-                db_needs_reload = true;
-                msgbox(['נוספו ' num2str(cnt) ' משתמשים למאגר בהצלחה!'], 'סיום');
-            else
-                msgbox('לא נוספו משתמשים (איכות נמוכה או שגיאה).', 'מידע');
-            end
-
-        % === 4. זיהוי המוני (בדיקות) ===
-        case 4
-            if isempty(fingerprintDB), msgbox('המאגר ריק.', 'שגיאה', 'error'); continue; end
-            
-            [files, path] = uigetfile({'*.tif;*.png;*.jpg', 'Images'}, 'בחר תמונות לבדיקה', 'data/', 'MultiSelect', 'on');
-            if isequal(files, 0), continue; end
-            if ischar(files), files = {files}; end
-            
-            results = {};
-            hWait = waitbar(0, 'מריץ טסטים...');
-            correct = 0; valid = 0;
-            
-            for k = 1:length(files)
-                waitbar(k/length(files), hWait, sprintf('בודק %d/%d', k, length(files)));
-                [currData, ~, err] = load_and_process_image(fullfile(path, files{k}), minPointsEnroll);
-                
-                realID = strsplit(files{k}, '_'); realID = realID{1}; 
-                
-                if ~isempty(err)
-                    results(end+1, :) = {files{k}, realID, '---', 0, 'פסול (איכות)'};
-                    continue;
-                end
-                
-                valid = valid + 1;
-                bestScore = 0; bestMatch = '---';
-                
-                for i = 1:length(fingerprintDB)
-                    dbData.minutiae = fingerprintDB(i).template;
-                    dbData.descriptors = fingerprintDB(i).descriptors;
-                    
-                    % בדיקת אופטימיזציה T_sq
-                    if isfield(fingerprintDB(i), 'T_sq')
-                        dbData.T_sq = fingerprintDB(i).T_sq;
-                    end
-                    
-                    % --- תיקון: הפונקציה מחזירה רק 2 ערכים ---
-                    [score, ~] = find_best_match(dbData, currData);
-                    
-                    if score > bestScore
-                        bestScore = score;
-                        if score >= PASS_THRESHOLD
-                            bestMatch = fingerprintDB(i).name;
-                        end
-                    end
-                end
-                
-                matchParts = strsplit(bestMatch, '_'); matchID = matchParts{1};
-                isCorrect = strcmp(realID, matchID);
-                if isCorrect, correct = correct + 1; status = 'V'; else, status = 'X'; end
-                
-                results(end+1, :) = {files{k}, realID, bestMatch, bestScore, status};
-            end
-            close(hWait);
-            
-            % הצגת טבלה
-            succRate = 0; if valid > 0, succRate = (correct/valid)*100; end
-            f = figure('Name', 'תוצאות', 'Position', [100 100 600 500], 'MenuBar', 'none');
-            uitable(f, 'Data', results, 'ColumnName', {'קובץ', 'אמת', 'זוהה', 'ציון', 'סטטוס'}, ...
-                    'Position', [20 20 560 420]);
-            uicontrol(f, 'Style', 'text', 'String', sprintf('דיוק: %.1f%%', succRate), ...
-                      'Position', [20 450 560 30], 'FontSize', 14, 'FontWeight', 'bold');
-
-        % === 5. הצגת המאגר (משודרג - צפייה בנתונים) ===
-        case 5
-            if isempty(fingerprintDB)
-                msgbox('המאגר ריק.', 'מידע');
-            else
-                % הכנת רשימה יפה לתצוגה שכוללת גם את מספר הנקודות
-                displayList = cell(length(fingerprintDB), 1);
-                for i = 1:length(fingerprintDB)
-                    numPts = size(fingerprintDB(i).template, 1);
-                    displayList{i} = sprintf('%s  [נקודות: %d]', fingerprintDB(i).name, numPts);
-                end
-                
-                [idx, tf] = listdlg('ListString', displayList, ...
-                                    'SelectionMode', 'single', ...
-                                    'ListSize', [300 400], ...
-                                    'Name', 'מאגר משתמשים', ...
-                                    'PromptString', 'בחר משתמש לצפייה בפרטים:');
-                
-                if tf
-                    selectedUser = fingerprintDB(idx);
-                    
-                    figure('Name', ['פרטי משתמש: ' selectedUser.name], ...
-                           'NumberTitle', 'off', 'MenuBar', 'none', ...
-                           'Position', [200 200 800 400]);
-                    
-                    % צד ימין: תמונה
-                    subplot(1, 2, 1);
-                    % --- תיקון: בדיקה אם יש תמונה שמורה במאגר קודם ---
-                    imgToShow = [];
-                    if isfield(selectedUser, 'processedImg') && ~isempty(selectedUser.processedImg)
-                        imgToShow = selectedUser.processedImg;
-                        titleStr = 'תמונה מעובדת (מתוך המאגר)';
-                    elseif isfield(selectedUser, 'imagePath') && exist(selectedUser.imagePath, 'file')
-                        imgToShow = imread(selectedUser.imagePath);
-                        titleStr = 'תמונה מקורית (מהקובץ)';
-                    end
-                    
-                    if ~isempty(imgToShow)
-                        imshow(imgToShow);
-                        title(titleStr, 'FontSize', 12);
-                    else
-                        axis off; 
-                        text(0.5, 0.5, 'תמונה לא זמינה', ...
-                             'HorizontalAlignment', 'center', 'Color', 'r', 'FontSize', 14);
-                    end
-                    
-                    % צד שמאל: נקודות
-                    subplot(1, 2, 2);
-                    pts = selectedUser.template;
-                    plot(pts(:,1), pts(:,2), 'bo', 'MarkerFaceColor', 'b', 'MarkerSize', 4);
-                    hold on;
-                    quiver(pts(:,1), pts(:,2), cos(pts(:,4)), -sin(pts(:,4)), 0.3, 'r');
-                    axis ij; grid on; axis equal;
-                    title(['תבנית ביומטרית: ' num2str(size(pts,1)) ' נקודות'], 'FontSize', 12);
-                    legend('Minutiae', 'Direction');
-                    xlim([0 300]); ylim([0 300]); 
-                end
-            end
-    end
-end
-
-
-
-% ========================================================================
 % FILENAME: setup_project.m
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab
 % ========================================================================
@@ -349,137 +17,6 @@ function setup_project()
     addpath(fullfile(currentDir, 'data'));
     
     disp('>> נתיבי הפרויקט הוגדרו בהצלחה (Relative Paths).');
-end
-
-
-
-% ========================================================================
-% FILENAME: run_batch_gabor.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\scripts
-% ========================================================================
-
-%% run_batch_gabor.m - עיבוד אצווה עם Gabor ב-MATLAB בלבד
-clc; close all; clear;
-setup_project();
-% הגדרת תיקיית שמירה
-saveFolder = fullfile(pwd, 'data', 'processed_skeletons'); 
-if ~exist(saveFolder, 'dir'), mkdir(saveFolder); end
-
-% 1. בחירת קבצים
-disp('אנא בחר את התמונות המקוריות לעיבוד...');
-[files, path] = uigetfile({'*.tif;*.png;*.jpg;*.bmp', 'Image Files'}, ...
-                           'בחר תמונות', 'MultiSelect', 'on');
-
-if isequal(files, 0), disp('לא נבחרו קבצים.'); return; end
-if ischar(files), files = {files}; end
-
-h = waitbar(0, 'מתחיל עיבוד...');
-totalFiles = length(files);
-
-for k = 1:totalFiles
-    filename = files{k};
-    fullPath = fullfile(path, filename);
-    [~, nameNoExt, ~] = fileparts(filename);
-    
-    waitbar(k/totalFiles, h, sprintf('מעבד: %s...', filename));
-    
-    try
-        % --- שלב העיבוד (קורא לפונקציה החדשה שיצרנו) ---
-        img = imread(fullPath);
-        
-        % הפונקציה הזו מחליפה את הסקריפט של פייתון + העיבוד הקודם
-        [~, ~, ~, ~, debugData] = process_fingerprint(img, false);
-        skeletonMask = debugData.skeletonImg;
-        enhancedImg  = debugData.enhancedImg;
-        
-        % --- שמירה ---
-        % שמירת השלד (נהפוך צבעים אם צריך שחור על גבי לבן ל-PNG)
-        % ~skeletonMask הופך את ה-1 (רכס) ל-0 (שחור) ואת הרקע ללבן
-        finalOutput = ~skeletonMask; 
-        
-        saveName = fullfile(saveFolder, [nameNoExt '_skeleton.png']);
-        imwrite(finalOutput, saveName);
-        
-        % אופציונלי: שמירת התמונה המשופרת (Gabor) לצורך בדיקה
-        % imwrite(enhancedImg > 0, fullfile(saveFolder, [nameNoExt '_enhanced.png']));
-        
-        fprintf('V הושלם: %s\n', filename);
-        
-    catch err
-        fprintf('X שגיאה ב-%s: %s\n', filename, err.message);
-    end
-end
-
-close(h);
-msgbox(['הסתיים העיבוד! הקבצים נשמרו ב: ' saveFolder]);
-
-
-
-% ========================================================================
-% FILENAME: visualiz.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\scripts
-% ========================================================================
-
-%% run_visualizer.m
-clc; clear;
-setup_project(); % קריאה לפונקציה מהתיקייה הראשית
-
-%% === הגדרות משתמש ===
-USE_FIXED_FILE = false; 
-
-% הגדר כאן רק את שם הקובץ
-%FIXED_FILENAME = '101_7.tif'; 101_6.tif 108_5.tif 101_6.tif 106_4.tif 
-FIXED_FILENAME = '101_4.tif'; 
-
-
-% הגדר כאן את הנתיב לתיקייה
-FIXED_FOLDER = 'C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\data\DB1_B';
-%% ====================
-
-% 1. לוגיקה לבחירת הקובץ
-if USE_FIXED_FILE
-    % חיבור הנתיב הארוך עם שם הקובץ
-    fullPath = fullfile(FIXED_FOLDER, FIXED_FILENAME);
-    
-    % בדיקה שהקובץ אכן קיים
-    if ~isfile(fullPath)
-        % ניסיון אחרון: אולי הקובץ נמצא בתיקייה הנוכחית?
-        if isfile(FIXED_FILENAME)
-            fullPath = FIXED_FILENAME;
-        else
-            % הודעת שגיאה ברורה עם הנתיב שניסינו
-            error('הקובץ לא נמצא!\nחיפשתי ב:\n%s\nוגם בתיקייה הנוכחית.', fullPath);
-        end
-    end
-    fprintf('>> מצב אוטומטי: טוען תמונה %s\n', FIXED_FILENAME);
-    
-else
-    % --- אופציה ב': בחירה ידנית עם חלון ---
-    startPath = 'data/';
-    if ~exist(startPath, 'dir'), startPath = pwd; end
-    
-    [fileName, pathName] = uigetfile({'*.png;*.tif;*.jpg;*.bmp', 'Fingerprint Images'}, ...
-                                     'בחר תמונה לבדיקה', startPath);
-    
-    if isequal(fileName, 0)
-        disp('לא נבחרו קבצים. יציאה.');
-        return;
-    end
-    fullPath = fullfile(pathName, fileName);
-    fprintf('>> נבחר ידנית: %s\n', fileName);
-end
-
-% 2. טעינת התמונה וביצוע העיבוד
-try
-    img = imread(fullPath);
-    
-    % 3. הפעלת העיבוד במצב ויזואליזציה
-    % כעת הפונקציה תרוץ כי הוספנו את addpath('src') בהתחלה
-    process_fingerprint(img, true);
-    
-catch err
-    errordlg(['שגיאה בטעינה או בעיבוד: ' err.message]);
-    rethrow(err); % הצגת השגיאה המלאה בחלון הפקודות
 end
 
 
@@ -1716,358 +1253,118 @@ end
 
 
 % ========================================================================
-% FILENAME: add_user_to_db.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\04_Database
-% ========================================================================
-
-function add_user_to_db(fname, name, dataStruct, processedImg)
-    % add_user_to_db - גרסה מעודכנת: שומרת את התמונה החתוכה במאגר
-    % הקלט 'processedImg' הוא התמונה עצמה (מטריצה), לא נתיב לקובץ.
-
-    % טעינת המאגר הקיים או יצירת חדש
-    if isfile(fname)
-        loaded = load(fname, 'fingerprintDB');
-        fingerprintDB = loaded.fingerprintDB;
-    else
-        % מבנה מעודכן: במקום imagePath יש לנו processedImg
-        fingerprintDB = struct('name', {}, 'template', {}, 'descriptors', {}, 'processedImg', {}, 'T_sq', {});
-    end
-
-    % בניית הרשומה החדשה
-    newEntry.name = name;
-    newEntry.template = dataStruct.minutiae;
-    newEntry.descriptors = dataStruct.descriptors;
-    % --- שינוי קריטי: שמירת התמונה החתוכה בתוך המאגר ---
-    newEntry.processedImg = processedImg;
-    % -------------------------------------------------
-
-    % חישוב T_sq (אופטימיזציה לזיהוי)
-    newEntry.T_sq = sum(dataStruct.minutiae(:,1:2).^2, 2);
-
-    % הוספה למערך
-    if isempty(fingerprintDB)
-        fingerprintDB = newEntry;
-    else
-        fingerprintDB(end+1) = newEntry;
-    end
-
-    % שמירה לקובץ
-    save(fname, 'fingerprintDB');
-
-    disp(['>> משתמש נוסף למאגר: ' name]);
-end
-
-
-
-% ========================================================================
 % FILENAME: run_mass_identification.m
 % PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\05_Visualization
 % ========================================================================
 
 function run_mass_identification(app, fileList, basePath)
-    % run_mass_identification - גרסה המקבלת רשימת קבצים ספציפית
-    % app: האפליקציה (לעדכון גרפים)
-    % fileList: רשימת שמות הקבצים (Cell Array)
-    % basePath: הנתיב לתיקייה בה הם נמצאים
+    % run_mass_identification - גרסה עם פס טעינה מותאם אישית (Custom Progress Bar)
     
     totalFiles = length(fileList);
     
-    % 1. איפוס הטבלה והמד
+    % 1. איפוס והגדרת סגנונות
     app.tblMassResults.Data = {};
-    app.gaugeProgress.Value = 0; 
     
-    % משתנים לסטטיסטיקה
+    % --- איפוס פס הטעינה הידני ---
+    % 1. משיגים את הרוחב המקסימלי של הבר (רוחב הרקע)
+    maxWidth = app.pnlProgressBack.Position(3); 
+    % 2. מאפסים את המילוי ל-0
+    app.lblProgressFill.Position(3) = 0; 
+    
+    % עיצוב טבלה
+    removeStyle(app.tblMassResults); 
+    styleBlue = uistyle('BackgroundColor', '#3849c7', 'FontColor', '#ffffff', 'FontWeight', 'bold');
+    styleWhite = uistyle('BackgroundColor', '#ffffff', 'FontColor', '#171b26');
+    
     resultsData = {}; 
     successCount = 0;
     validCount = 0;
+    lastStyledRow = 0; 
     
-    % סף להצלחה
     threshold = 15;
     if isfield(app.CurrentConfig.match, 'pass_threshold')
         threshold = app.CurrentConfig.match.pass_threshold;
     end
     
-    % 2. הלולאה הראשית (רוצה על הרשימה שקיבלנו)
+    % 2. הלולאה הראשית
     for k = 1:totalFiles
-        filename = fileList{k}; % שליפת השם מהרשימה
+        filename = fileList{k}; 
         fullFilePath = fullfile(basePath, filename);
-        
-        % חילוץ ID (הנחה: 101_1.tif)
         nameParts = strsplit(filename, {'_', '.'});
         realID = nameParts{1};
         
-        % --- עיבוד התמונה ---
+        % עיבוד
         try
             [currentData, ~, err] = load_and_process_image(fullFilePath, app.CurrentConfig.enroll.min_minutiae);
         catch
             err = 'Critical Error';
         end
         
-        % טיפול בשגיאות ואיכות נמוכה
         if ~isempty(err)
             resultsData(end+1, :) = {filename, realID, '---', 0, 'שגיאת איכות'};
         else
             validCount = validCount + 1;
-            
-            % --- חיפוש במאגר ---
-            bestScore = 0;
-            bestName = 'Unknown';
-            
+            bestScore = 0; bestName = 'Unknown';
             for i = 1:length(app.FingerprintDB)
                 dbData.minutiae = app.FingerprintDB(i).template;
                 dbData.descriptors = app.FingerprintDB(i).descriptors;
-                
-                if isfield(app.FingerprintDB(i), 'T_sq')
-                    dbData.T_sq = app.FingerprintDB(i).T_sq;
-                end
-                
+                if isfield(app.FingerprintDB(i), 'T_sq'), dbData.T_sq = app.FingerprintDB(i).T_sq; end
                 [score, ~] = find_best_match(dbData, currentData);
-                
-                if score > bestScore
-                    bestScore = score;
-                    bestName = app.FingerprintDB(i).name;
-                end
+                if score > bestScore, bestScore = score; bestName = app.FingerprintDB(i).name; end
             end
             
-            % --- בדיקת תוצאה ---
             isMatch = (bestScore >= threshold);
-            status = 'NO MATCH';
-            
             if isMatch
                 matchParts = strsplit(bestName, {'_', '.'});
-                matchID = matchParts{1};
-                
-                if strcmp(realID, matchID)
-                    successCount = successCount + 1;
-                    status = 'V (נכון)';
+                if strcmp(realID, matchParts{1})
+                    successCount = successCount + 1; status = 'V (נכון)';
                 else
                     status = 'X (שגוי)';
                 end
             else
                 status = 'X (לא זוהה)';
             end
-            
-            % שמירת הנתונים
             resultsData(end+1, :) = {filename, realID, bestName, bestScore, status};
         end
         
-        % --- עדכון ה-Progress Bar ---
-        % מעדכנים כל 5 תמונות או אם זו התמונה האחרונה
+        % --- עדכון התצוגה (כולל הבר החדש) ---
         if mod(k, 5) == 0 || k == totalFiles
             
-            progressPercent = (k / totalFiles) * 100;
-            
-            % עדכון המד
-            app.gaugeProgress.Value = progressPercent;
-            
-            % עדכון הטבלה
             app.tblMassResults.Data = resultsData;
             
-            % עדכון הטקסט
-            app.lblMassStatus.Text = sprintf('מעבד... %.1f%% (%d/%d)', progressPercent, k, totalFiles);
+            % --- צביעת שורות ---
+            newRowsRange = (lastStyledRow + 1) : k;
+            if ~isempty(newRowsRange)
+                oddRows = newRowsRange(mod(newRowsRange, 2) == 1);
+                evenRows = newRowsRange(mod(newRowsRange, 2) == 0);
+                if ~isempty(oddRows), addStyle(app.tblMassResults, styleWhite, 'row', oddRows); end
+                if ~isempty(evenRows), addStyle(app.tblMassResults, styleBlue, 'row', evenRows); end
+                lastStyledRow = k;
+            end
+            
+            % --- עדכון הבר החדש (שינוי רוחב) ---
+            progressRatio = (k / totalFiles); % מספר בין 0 ל-1
+            newWidth = maxWidth * progressRatio; % חישוב הרוחב החדש בפיקסלים
+            app.lblProgressFill.Position(3) = newWidth; % השמת הרוחב החדש
+            
+            % עדכון טקסט
+            app.lblMassStatus.Text = sprintf('מעבד... %.0f%% (%d/%d)', progressRatio*100, k, totalFiles);
             
             drawnow limitrate; 
         end
     end
     
     % 3. סיום
-   currentAccuracy = 0;
+    currentAccuracy = 0;
     if validCount > 0
         currentAccuracy = (successCount / validCount) * 100;
     end
     
-    app.gaugeProgress.Value = 100; 
+    % מילוי מלא בסוף (ליתר ביטחון)
+    app.lblProgressFill.Position(3) = maxWidth;
     app.lblMassStatus.Text = sprintf('סיום! דיוק סופי: %.2f%%', currentAccuracy);
     
-    % === התיקון כאן: הוספנו 'Icon', 'success' ===
     uialert(app.UIFigure, 'תהליך הזיהוי ההמוני הסתיים בהצלחה.', 'הושלם', 'Icon', 'success');
-end
-
-
-
-% ========================================================================
-% FILENAME: visualize_match_result.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\05_Visualization
-% ========================================================================
-
-function visualize_match_result(img, dbTemp, alignedInput, name, score)
-    % visualize_match_result - מציגה גרפית את תוצאת ההתאמה
-    % Inputs:
-    %   img:          התמונה המקורית של הנבדק
-    %   dbTemp:       הנקודות של המשתמש מהמאגר (אדום)
-    %   alignedInput: הנקודות של הנבדק אחרי יישור (ירוק)
-    %   name:         שם המזוהה
-    %   score:        ציון ההתאמה
-    
-    figure('Name', 'תוצאת זיהוי', 'NumberTitle', 'off');
-    imshow(img); hold on;
-    
-    titleString = sprintf('Match Found: %s (Score: %.2f)', name, score);
-    title(titleString, 'FontSize', 12, 'Color', 'b');
-    
-    if ~isempty(dbTemp) && ~isempty(alignedInput)
-        % נקודות מהמאגר (המטרה) - אדום
-        h1 = plot(dbTemp(:,1), dbTemp(:,2), 'ro', 'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', 'Database');
-        
-        % נקודות מהקלט (אחרי שסובבנו אותן) - ירוק
-        h2 = plot(alignedInput(:,1), alignedInput(:,2), 'g+', 'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', 'Input (Aligned)');
-        
-        % קו מחבר בין נקודות קרובות (ויזואליזציה של ההתאמה)
-        % (אופציונלי - עוזר לראות מי התאים למי)
-        for i = 1:size(alignedInput, 1)
-            % מחפש את הנקודה הקרובה ביותר במאגר
-            dists = sum((dbTemp(:,1:2) - alignedInput(i,1:2)).^2, 2);
-            [minD, idx] = min(dists);
-            if minD < 100 % אם הן קרובות (מרחק < 10 פיקסלים)
-                plot([alignedInput(i,1) dbTemp(idx,1)], ...
-                     [alignedInput(i,2) dbTemp(idx,2)], 'y-', 'LineWidth', 1);
-            end
-        end
-        
-        legend([h1, h2], 'Location', 'best');
-    end
-    
-    hold off;
-end
-
-
-
-% ========================================================================
-% FILENAME: visualize_pipeline.m
-% PATH:     C:\Users\User\OneDrive - ac.sce.ac.il\מסמכים\MATLAB\fingerprint matlab\src\05_Visualization
-% ========================================================================
-
-function visualize_pipeline(data, cfg)
-    % visualize_pipeline - מציג את שלבי האלגוריתם (גרסה מתוקנת: תצוגה תואמת לוגיקה)
-    
-    if nargin < 2
-        cfg = get_config(); 
-    end
-    
-    figure('Name', 'Fingerprint Pipeline: Skeleton View', 'Units', 'normalized', 'Position', [0 0.1 1 0.8]);
-    
-    % 1. מקור
-    subplot(2, 4, 1); 
-    imshow(data.imgGray); 
-    title('1. מקור (אפור)', 'FontSize', 12);
-    
-    % 2. מסיכה (ROI)
-    subplot(2, 4, 2); 
-    imshow(data.roiMask); 
-    title('2. מסיכה (Segmentation)', 'FontSize', 12);
-    
-    % 3. בינארי (אחרי Gabor)
-    subplot(2, 4, 3); 
-    imshow(data.binaryMasked); 
-    title('3. בינארי (Gabor Filtered)', 'FontSize', 12);
-    
-    % 4. שלד
-    subplot(2, 4, 4); 
-    imshow(data.skeletonImg); 
-    title('4. שלד (Thinned)', 'FontSize', 12);
-    
-    % --- שורה תחתונה: ניתוח המינוטים ---
-    
-    % 5. גולמי (Raw)
-    subplot(2, 4, 5); 
-    imshow(~data.skeletonImg); hold on; 
-    
-    rawPts = data.rawMinutiae;
-    if ~isempty(rawPts)
-        % אנחנו נציג את כל הנקודות הגולמיות, אבל נסמן בצבע אחר את אלו שבחוץ
-        plot(rawPts(:,1), rawPts(:,2), 'b.', 'MarkerSize', 8); 
-    end
-    title(['5. גולמי על שלד (' num2str(size(rawPts,1)) ')'], 'FontSize', 12);
-    
-    % 6. סופי (סינון + גבולות)
-    finalPts = data.finalTemplate;
-    subplot(2, 4, 6); 
-    imshow(~data.skeletonImg); hold on; 
-    
-    % === תיקון קריטי בויזואליזציה ===
-    % חישוב הגבול הוירטואלי בדיוק כמו בפילטר (רק לנקודות שבמסיכה)
-    if ~isempty(rawPts)
-        % 1. סינון הנקודות לפי המסיכה (כמו בלוגיקה האמיתית)
-        X = round(rawPts(:, 1));
-        Y = round(rawPts(:, 2));
-        [h, w] = size(data.roiMask);
-        
-        % זריקת חריגים
-        validIdx = (X >= 1) & (X <= w) & (Y >= 1) & (Y <= h);
-        tempPts = rawPts(validIdx, :);
-        X = X(validIdx); Y = Y(validIdx);
-        
-        % בדיקת מסיכה
-        ind = sub2ind([h, w], Y, X);
-        inMask = data.roiMask(ind);
-        maskedPts = tempPts(inMask, :);
-        
-        % 2. ציור הגבול רק סביב הנקודות החוקיות
-        if size(maskedPts, 1) >= 3
-            if isfield(cfg.filter, 'boundary_shrink_factor')
-                shrinkVal = cfg.filter.boundary_shrink_factor;
-            else
-                shrinkVal = 0.5; 
-            end
-            
-            try
-                k = boundary(maskedPts(:,1), maskedPts(:,2), shrinkVal);
-                boundPts = maskedPts(k, :);
-                
-                % ציור קו הגבול (מגנטה)
-                plot(boundPts(:,1), boundPts(:,2), 'm-', 'LineWidth', 2); 
-            catch
-            end
-        end
-    end
-    % ================================
-    
-    % ציור הנקודות הסופיות שנשארו
-    if ~isempty(finalPts)
-        % סיומות (Endings) - עיגול אדום
-        termIdx = finalPts(:,3) == 1;
-        if any(termIdx)
-            plot(finalPts(termIdx, 1), finalPts(termIdx, 2), 'ro', 'LineWidth', 1.5, 'MarkerSize', 6);
-        end
-        
-        % פיצולים (Bifurcations) - ריבוע ירוק
-        bifIdx = finalPts(:,3) == 3;
-        if any(bifIdx)
-            plot(finalPts(bifIdx, 1), finalPts(bifIdx, 2), 'gs', 'LineWidth', 1.5, 'MarkerSize', 6);
-        end
-    end
-    title(['6. סופי (' num2str(size(finalPts,1)) ') + גבול חכם'], 'FontSize', 12);
-    
-    % 7. כיוונים (אוריינטציה)
-    subplot(2, 4, 7); 
-    imshow(~data.skeletonImg); hold on;
-    if ~isempty(finalPts)
-        quiver(finalPts(:,1), finalPts(:,2), ...
-               cos(finalPts(:,4))*10, -sin(finalPts(:,4))*10, ...
-               0, 'b', 'LineWidth', 1.2); 
-    end
-    title('7. כיוונים', 'FontSize', 12);
-    
-    % 8. סיכום טקסטואלי
-    subplot(2, 4, 8); axis off;
-    
-    minRequired = cfg.enroll.min_minutiae;
-    numPoints = size(finalPts, 1);
-    
-    if numPoints >= minRequired
-        statusColor = 'g'; 
-        statusText = '✅ איכות טובה';
-    elseif numPoints >= (minRequired * 0.7)
-        statusColor = [1 0.5 0]; 
-        statusText = '⚠️ גבולי';
-    else
-        statusColor = 'r'; 
-        statusText = '❌ נכשל';
-    end
-    
-    text(0.5, 0.7, statusText, 'Color', statusColor, 'FontSize', 16, 'HorizontalAlignment', 'center', 'FontWeight', 'bold');
-    text(0.5, 0.5, sprintf('נמצאו %d נקודות', numPoints), 'Color', 'k', 'FontSize', 12, 'HorizontalAlignment', 'center');
-    text(0.5, 0.3, ['סף נדרש: ' num2str(minRequired)], 'Color', [0.5 0.5 0.5], 'FontSize', 10, 'HorizontalAlignment', 'center');
 end
 
 
